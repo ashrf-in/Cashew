@@ -36,6 +36,23 @@ class CheckWidgetLaunch extends StatefulWidget {
 
 Throttler widgetActionThrottler =
     Throttler(duration: Duration(milliseconds: 350));
+const Duration widgetLaunchDuplicateWindow = Duration(seconds: 2);
+String? lastHandledWidgetPayload;
+DateTime? lastHandledWidgetPayloadAt;
+
+bool shouldIgnoreDuplicateWidgetPayload(String payload) {
+  final DateTime now = DateTime.now();
+  if (lastHandledWidgetPayload == payload &&
+      lastHandledWidgetPayloadAt != null &&
+      now.difference(lastHandledWidgetPayloadAt!) <
+          widgetLaunchDuplicateWindow) {
+    return true;
+  }
+
+  lastHandledWidgetPayload = payload;
+  lastHandledWidgetPayloadAt = now;
+  return false;
+}
 
 class _CheckWidgetLaunchState extends State<CheckWidgetLaunch> {
   StreamSubscription<Uri?>? _widgetClickSubscription;
@@ -66,10 +83,12 @@ class _CheckWidgetLaunchState extends State<CheckWidgetLaunch> {
   void _launchedFromWidget(Uri? uri) async {
     if (!mounted) return;
 
+    String widgetPayload = (uri ?? "").toString();
+    if (widgetPayload.isEmpty) return;
+    if (shouldIgnoreDuplicateWidgetPayload(widgetPayload)) return;
+
     // Only perform one widget action per launch/continue of the app
     if (!widgetActionThrottler.canProceed()) return;
-
-    String widgetPayload = (uri ?? "").toString();
     if (widgetPayload == "addTransactionWidget") {
       // Add a delay so the keyboard can focus
       Future.delayed(Duration(milliseconds: 50), () {

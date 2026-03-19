@@ -426,7 +426,10 @@ class PageNavigationFrameworkState extends State<PageNavigationFramework> {
 
       await setDailyNotifications(context);
       await initializeDefaultDatabase();
-      runNotificationPayLoads(context);
+      await runPendingNotificationPayload(
+        context: context,
+        updateUpcomingTransactions: true,
+      );
       runQuickActionsPayLoads(context);
       initializeLocalizedMonthNames();
       initializeStoreAndPurchases(

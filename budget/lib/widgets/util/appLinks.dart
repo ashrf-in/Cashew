@@ -27,6 +27,23 @@ import 'package:provider/provider.dart';
 Throttler appLinksThrottler = Throttler(duration: Duration(milliseconds: 350));
 const int maxAppLinkContextRetries = 10;
 const Duration appLinkContextRetryDelay = Duration(milliseconds: 150);
+const Duration appLinkDuplicateWindow = Duration(seconds: 2);
+String? lastHandledAppLink;
+DateTime? lastHandledAppLinkAt;
+
+bool shouldIgnoreDuplicateAppLink(Uri uri) {
+  final DateTime now = DateTime.now();
+  final String currentUri = uri.toString();
+  if (lastHandledAppLink == currentUri &&
+      lastHandledAppLinkAt != null &&
+      now.difference(lastHandledAppLinkAt!) < appLinkDuplicateWindow) {
+    return true;
+  }
+
+  lastHandledAppLink = currentUri;
+  lastHandledAppLinkAt = now;
+  return false;
+}
 
 class InitializeAppLinks extends StatelessWidget {
   const InitializeAppLinks({required this.child, super.key});
@@ -293,6 +310,7 @@ Future executeAppLink(BuildContext? context, Uri uri,
     });
     return;
   }
+  if (shouldIgnoreDuplicateAppLink(uri)) return;
   if (!appLinksThrottler.canProceed()) return;
 
   String endPoint = getApiEndpoint(uri);

@@ -13,6 +13,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
+const int maxNotificationPayloadContextRetries = 12;
+const Duration notificationPayloadRetryDelay = Duration(milliseconds: 150);
+
 Future<String?> initializeNotifications() async {
   // Since iOS cannot send scheduled notifications when the app is open
   // There is no need to listen to incoming notification payloads
@@ -43,30 +46,63 @@ Future<String?> initializeNotifications() async {
   return response;
 }
 
-onSelectNotification(NotificationResponse notificationResponse) async {
+Future<void> onSelectNotification(
+    NotificationResponse notificationResponse) async {
   String? payloadData = notificationResponse.payload;
   notificationPayload = payloadData;
-  runNotificationPayLoadsNoContext();
+  await runNotificationPayLoadsNoContext();
 }
 
-runNotificationPayLoadsNoContext() {
-  if (navigatorKey.currentContext == null) return;
-  // If the upcoming transaction notification tapped when app opened, auto pay overdue transaction
-  if (notificationPayload == "upcomingTransaction") {
-    Future.delayed(Duration.zero, () async {
-      await markSubscriptionsAsPaid(navigatorKey.currentContext!);
-      await markUpcomingAsPaid();
-      await setUpcomingNotifications(navigatorKey.currentContext);
+Future<bool> runNotificationPayLoadsNoContext({int retryCount = 0}) async {
+  return await runPendingNotificationPayload(
+    context: navigatorKey.currentContext,
+    retryCount: retryCount,
+    updateUpcomingTransactions: true,
+  );
+}
+
+Future<bool> runPendingNotificationPayload({
+  BuildContext? context,
+  int retryCount = 0,
+  bool updateUpcomingTransactions = false,
+}) async {
+  if (kIsWeb) return false;
+
+  final String? payload = notificationPayload;
+  if (payload == null || payload.isEmpty) return false;
+
+  final BuildContext? currentContext = context ?? navigatorKey.currentContext;
+  if (currentContext == null) {
+    if (retryCount >= maxNotificationPayloadContextRetries) return false;
+
+    Future.delayed(notificationPayloadRetryDelay, () {
+      runPendingNotificationPayload(
+        context: navigatorKey.currentContext,
+        retryCount: retryCount + 1,
+        updateUpcomingTransactions: updateUpcomingTransactions,
+      );
     });
+    return false;
   }
-  runNotificationPayLoads(navigatorKey.currentContext);
+
+  if (updateUpcomingTransactions && payload == "upcomingTransaction") {
+    await markSubscriptionsAsPaid(currentContext);
+    await markUpcomingAsPaid();
+    await setUpcomingNotifications(currentContext);
+  }
+
+  return await runNotificationPayLoads(currentContext);
 }
 
-Future<bool> runNotificationPayLoads(context) async {
+Future<bool> runNotificationPayLoads(BuildContext context) async {
   print("Notification payload: " + notificationPayload.toString());
   if (kIsWeb) return false;
-  if (notificationPayload == null) return false;
-  if (notificationPayload == "addTransaction") {
+  final String? payload = notificationPayload;
+  if (payload == null || payload.isEmpty) return false;
+
+  notificationPayload = "";
+
+  if (payload == "addTransaction") {
     // Add a delay so the keyboard can focus
     await Future.delayed(Duration(milliseconds: 50), () async {
       pushRoute(
@@ -77,15 +113,15 @@ Future<bool> runNotificationPayLoads(context) async {
       );
     });
     return true;
-  } else if (notificationPayload == "upcomingTransaction") {
+  } else if (payload == "upcomingTransaction") {
     // When the notification comes in, the transaction is past due!
     pushRoute(
       context,
       UpcomingOverdueTransactions(overdueTransactions: null),
     );
     return true;
-  } else if (notificationPayload?.split("?")[0] == "openTransaction") {
-    Uri notificationPayloadUri = Uri.parse(notificationPayload ?? "");
+  } else if (payload.split("?")[0] == "openTransaction") {
+    Uri notificationPayloadUri = Uri.parse(payload);
     if (notificationPayloadUri.queryParameters["transactionPk"] == null)
       return false;
     String transactionPk =
@@ -101,7 +137,6 @@ Future<bool> runNotificationPayLoads(context) async {
     );
     return true;
   }
-  notificationPayload = "";
   return false;
 }
 

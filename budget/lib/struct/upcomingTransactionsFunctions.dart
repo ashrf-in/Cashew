@@ -18,6 +18,17 @@ import 'package:flutter/material.dart';
 import 'package:budget/widgets/openBottomSheet.dart';
 import 'package:provider/provider.dart';
 
+BuildContext? _resolveUpcomingFlowContext([BuildContext? context]) {
+  return context ?? navigatorKey.currentContext;
+}
+
+Future<void> _refreshUpcomingNotifications([BuildContext? context]) async {
+  final BuildContext? currentContext = _resolveUpcomingFlowContext(context);
+  if (currentContext == null) return;
+
+  await setUpcomingNotifications(currentContext);
+}
+
 Future createNewSubscriptionTransaction(
     BuildContext context, Transaction transaction,
     {String? closelyRelatedPairedTransactionFk}) async {
@@ -258,6 +269,7 @@ Future openPayPopup(
       popRoute(context);
       await markAsSkipped(
         transaction: transaction,
+        context: context,
       );
     },
     onSubmitLabel: transaction.income ? "deposit".tr() : "pay".tr(),
@@ -283,13 +295,15 @@ Future openPayPopup(
       popRoute(context);
       await markAsPaid(
         transaction: transaction,
+        context: context,
       );
     },
   );
 }
 
-Future markAsPaid({
+Future<void> markAsPaid({
   required Transaction transaction,
+  BuildContext? context,
   // Avoid infinite recursion
   bool updatingCloselyRelated = false,
 }) async {
@@ -300,6 +314,7 @@ Future markAsPaid({
     if (closelyRelatedTransferCorrectionTransaction != null) {
       await markAsPaid(
         transaction: closelyRelatedTransferCorrectionTransaction,
+        context: context,
         updatingCloselyRelated: true,
       );
       closelyRelatedPairedTransactionFk =
@@ -314,16 +329,20 @@ Future markAsPaid({
     originalDateDue: Value(transaction.dateCreated),
   );
   await database.createOrUpdateTransaction(transactionNew);
-  await createNewSubscriptionTransaction(
-    navigatorKey.currentContext!,
-    transaction,
-    closelyRelatedPairedTransactionFk: closelyRelatedPairedTransactionFk,
-  );
-  await setUpcomingNotifications(navigatorKey.currentContext!);
+  final BuildContext? currentContext = _resolveUpcomingFlowContext(context);
+  if (currentContext != null) {
+    await createNewSubscriptionTransaction(
+      currentContext,
+      transaction,
+      closelyRelatedPairedTransactionFk: closelyRelatedPairedTransactionFk,
+    );
+  }
+  await _refreshUpcomingNotifications(currentContext);
 }
 
-Future markAsSkipped({
+Future<void> markAsSkipped({
   required Transaction transaction,
+  BuildContext? context,
   // Avoid infinite recursion
   bool updatingCloselyRelated = false,
 }) async {
@@ -334,6 +353,7 @@ Future markAsSkipped({
     if (closelyRelatedTransferCorrectionTransaction != null) {
       await markAsSkipped(
         transaction: closelyRelatedTransferCorrectionTransaction,
+        context: context,
         updatingCloselyRelated: true,
       );
       closelyRelatedPairedTransactionFk =
@@ -346,12 +366,15 @@ Future markAsSkipped({
     createdAnotherFutureTransaction: Value(true),
   );
   await database.createOrUpdateTransaction(transactionNew);
-  await createNewSubscriptionTransaction(
-    navigatorKey.currentContext!,
-    transaction,
-    closelyRelatedPairedTransactionFk: closelyRelatedPairedTransactionFk,
-  );
-  await setUpcomingNotifications(navigatorKey.currentContext!);
+  final BuildContext? currentContext = _resolveUpcomingFlowContext(context);
+  if (currentContext != null) {
+    await createNewSubscriptionTransaction(
+      currentContext,
+      transaction,
+      closelyRelatedPairedTransactionFk: closelyRelatedPairedTransactionFk,
+    );
+  }
+  await _refreshUpcomingNotifications(currentContext);
 }
 
 Future openPayDebtCreditPopup(
@@ -533,7 +556,7 @@ Future openRemoveSkipPopup(
       Transaction transactionNew = transaction.copyWith(skipPaid: false);
       popRoute(context, true);
       await database.createOrUpdateTransaction(transactionNew);
-      await setUpcomingNotifications(navigatorKey.currentContext!);
+      await _refreshUpcomingNotifications(context);
     },
   );
 }
@@ -568,7 +591,7 @@ Future openUnpayPopup(
         );
         popRoute(context, true);
         await database.createOrUpdateTransaction(transactionNew);
-        await setUpcomingNotifications(navigatorKey.currentContext!);
+        await _refreshUpcomingNotifications(context);
       });
 }
 
