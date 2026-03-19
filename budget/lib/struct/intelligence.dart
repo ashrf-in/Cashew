@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:budget/database/tables.dart';
+import 'package:budget/struct/notificationCapture.dart';
 import 'package:budget/struct/settings.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -150,6 +151,85 @@ class ReceiptAnalysis {
       ),
       reasoning: _stringFromJson(json["reasoning"]),
       lineItems: lineItems,
+    );
+  }
+}
+
+class NotificationTemplateAnalysis {
+  const NotificationTemplateAnalysis({
+    required this.canCreateTemplate,
+    this.templateName,
+    this.contains,
+    this.titleTransactionBefore,
+    this.titleTransactionAfter,
+    this.amountTransactionBefore,
+    this.amountTransactionAfter,
+    this.extractedTitle,
+    this.extractedAmount,
+    this.direction,
+    this.suggestedCategoryName,
+    this.suggestedAccountName,
+    this.reasoning,
+    this.confidence,
+  });
+
+  final bool canCreateTemplate;
+  final String? templateName;
+  final String? contains;
+  final String? titleTransactionBefore;
+  final String? titleTransactionAfter;
+  final String? amountTransactionBefore;
+  final String? amountTransactionAfter;
+  final String? extractedTitle;
+  final double? extractedAmount;
+  final NotificationTransactionDirection? direction;
+  final String? suggestedCategoryName;
+  final String? suggestedAccountName;
+  final String? reasoning;
+  final int? confidence;
+
+  bool get hasTemplateSegments =>
+      contains?.trim().isNotEmpty == true &&
+      titleTransactionBefore != null &&
+      titleTransactionAfter != null &&
+      amountTransactionBefore != null &&
+      amountTransactionAfter != null;
+
+  factory NotificationTemplateAnalysis.fromJson(Map<String, dynamic> json) {
+    final String? rawDirection =
+        _stringFromJson(json["direction"])?.toLowerCase();
+    return NotificationTemplateAnalysis(
+      canCreateTemplate:
+          json["canCreateTemplate"] == true || json["canParse"] == true,
+      templateName: _stringFromJson(json["templateName"]),
+      contains: _stringAllowEmptyFromJson(json["contains"]),
+      titleTransactionBefore:
+          _stringAllowEmptyFromJson(json["titleTransactionBefore"]),
+      titleTransactionAfter:
+          _stringAllowEmptyFromJson(json["titleTransactionAfter"]),
+      amountTransactionBefore:
+          _stringAllowEmptyFromJson(json["amountTransactionBefore"]),
+      amountTransactionAfter:
+          _stringAllowEmptyFromJson(json["amountTransactionAfter"]),
+      extractedTitle: _stringFromJson(
+        json["extractedTitle"] ?? json["title"],
+      ),
+      extractedAmount: _doubleFromJson(
+        json["extractedAmount"] ?? json["amount"],
+      ),
+      direction: rawDirection == "income"
+          ? NotificationTransactionDirection.income
+          : rawDirection == "expense"
+              ? NotificationTransactionDirection.expense
+              : null,
+      suggestedCategoryName: _stringFromJson(
+        json["suggestedCategoryName"] ?? json["suggestedCategory"],
+      ),
+      suggestedAccountName: _stringFromJson(
+        json["suggestedAccountName"] ?? json["suggestedWalletName"],
+      ),
+      reasoning: _stringFromJson(json["reasoning"]),
+      confidence: _intFromJson(json["confidence"]),
     );
   }
 }
@@ -347,6 +427,50 @@ Future<ReceiptAnalysis> analyzeReceiptImage({
   return ReceiptAnalysis.fromJson(parsedJson);
 }
 
+Future<NotificationTemplateAnalysis> analyzeNotificationMessage({
+  required String notificationMessage,
+  required List<TransactionCategory> categories,
+  required List<TransactionWallet> wallets,
+  TransactionWallet? selectedWallet,
+  IntelligenceConfig? config,
+}) async {
+  final IntelligenceConfig activeConfig = config ?? getCurrentIntelligenceConfig();
+  if (activeConfig.apiKey.trim().isEmpty) {
+    throw ("Configure an API key in Intelligence settings first.");
+  }
+  if (activeConfig.model.trim().isEmpty) {
+    throw ("Select a model in Intelligence settings first.");
+  }
+
+  final String prompt = _buildNotificationTemplatePrompt(
+    notificationMessage: notificationMessage,
+    categories: categories,
+    wallets: wallets,
+    selectedWallet: selectedWallet,
+  );
+
+  const String systemPrompt =
+      "You analyze financial notification text and return strict JSON only. "
+      "All template boundary fields must be copied exactly from the source text with no paraphrasing.";
+
+  final String responseText;
+  if (activeConfig.provider == intelligenceProviderGemini) {
+    responseText = await _analyzeTextWithGemini(
+      config: activeConfig,
+      prompt: "$systemPrompt\n\n$prompt",
+    );
+  } else {
+    responseText = await _analyzeTextWithOpenAICompatible(
+      config: activeConfig,
+      systemPrompt: systemPrompt,
+      prompt: prompt,
+    );
+  }
+
+  final Map<String, dynamic> parsedJson = _extractJsonObject(responseText);
+  return NotificationTemplateAnalysis.fromJson(parsedJson);
+}
+
 Future<ReceiptImageSelection> pickReceiptImage({
   required ReceiptCaptureSource source,
 }) async {
@@ -532,6 +656,68 @@ Future<String> _analyzeReceiptWithOpenAICompatible({
   throw ("The AI provider did not return usable receipt data.");
 }
 
+Future<String> _analyzeTextWithOpenAICompatible({
+  required IntelligenceConfig config,
+  required String systemPrompt,
+  required String prompt,
+}) async {
+  final Uri uri = Uri.parse(
+    "${_normalizeBaseUrl(config.baseUrl)}/chat/completions",
+  );
+
+  final Map<String, dynamic> body = <String, dynamic>{
+    "model": config.model,
+    "temperature": 0.1,
+    "messages": <Map<String, dynamic>>[
+      <String, dynamic>{
+        "role": "system",
+        "content": systemPrompt,
+      },
+      <String, dynamic>{
+        "role": "user",
+        "content": prompt,
+      },
+    ],
+  };
+
+  final http.Response response = await http.post(
+    uri,
+    headers: <String, String>{
+      "Authorization": "Bearer ${config.apiKey}",
+      "Content-Type": "application/json",
+    },
+    body: jsonEncode(body),
+  );
+
+  final Map<String, dynamic> decoded = _decodeJsonResponse(response);
+  final List<dynamic> choices = decoded["choices"] is List<dynamic>
+      ? decoded["choices"] as List<dynamic>
+      : <dynamic>[];
+  if (choices.isEmpty) {
+    throw ("The AI provider returned an empty response.");
+  }
+
+  final dynamic message = (choices.first as Map<String, dynamic>)["message"];
+  if (message is Map<String, dynamic>) {
+    final dynamic content = message["content"];
+    if (content is String && content.trim().isNotEmpty) {
+      return content;
+    }
+    if (content is List<dynamic>) {
+      final String combined = content
+          .whereType<Map<String, dynamic>>()
+          .map((part) => part["text"]?.toString() ?? "")
+          .join("\n")
+          .trim();
+      if (combined.isNotEmpty) {
+        return combined;
+      }
+    }
+  }
+
+  throw ("The AI provider did not return usable notification data.");
+}
+
 Future<String> _analyzeReceiptWithGemini({
   required IntelligenceConfig config,
   required ReceiptImageSelection image,
@@ -591,6 +777,62 @@ Future<String> _analyzeReceiptWithGemini({
       .trim();
   if (text.isEmpty) {
     throw ("The Gemini API did not return usable receipt data.");
+  }
+  return text;
+}
+
+Future<String> _analyzeTextWithGemini({
+  required IntelligenceConfig config,
+  required String prompt,
+}) async {
+  final String model = config.model.startsWith("models/")
+      ? config.model
+      : "models/${config.model}";
+  final Uri uri = Uri.parse(
+    "${_normalizeBaseUrl(config.baseUrl)}/$model:generateContent",
+  ).replace(queryParameters: <String, String>{"key": config.apiKey});
+
+  final Map<String, dynamic> body = <String, dynamic>{
+    "contents": <Map<String, dynamic>>[
+      <String, dynamic>{
+        "parts": <Map<String, dynamic>>[
+          <String, dynamic>{"text": prompt},
+        ],
+      },
+    ],
+    "generationConfig": <String, dynamic>{
+      "temperature": 0.1,
+      "responseMimeType": "application/json",
+    },
+  };
+
+  final http.Response response = await http.post(
+    uri,
+    headers: <String, String>{"Content-Type": "application/json"},
+    body: jsonEncode(body),
+  );
+
+  final Map<String, dynamic> decoded = _decodeJsonResponse(response);
+  final List<dynamic> candidates = decoded["candidates"] is List<dynamic>
+      ? decoded["candidates"] as List<dynamic>
+      : <dynamic>[];
+  if (candidates.isEmpty) {
+    throw ("The Gemini API returned an empty response.");
+  }
+
+  final Map<String, dynamic>? content =
+      (candidates.first as Map<String, dynamic>)["content"]
+          as Map<String, dynamic>?;
+  final List<dynamic> parts = content?["parts"] is List<dynamic>
+      ? content!["parts"] as List<dynamic>
+      : <dynamic>[];
+  final String text = parts
+      .whereType<Map<String, dynamic>>()
+      .map((part) => part["text"]?.toString() ?? "")
+      .join("\n")
+      .trim();
+  if (text.isEmpty) {
+    throw ("The Gemini API did not return usable notification data.");
   }
   return text;
 }
@@ -727,6 +969,103 @@ String _buildReceiptPrompt({
   return buffer.toString();
 }
 
+String _buildNotificationTemplatePrompt({
+  required String notificationMessage,
+  required List<TransactionCategory> categories,
+  required List<TransactionWallet> wallets,
+  required TransactionWallet? selectedWallet,
+}) {
+  final StringBuffer buffer = StringBuffer()
+    ..writeln(
+      "Analyze this financial notification and return a single JSON object only.",
+    )
+    ..writeln("Do not wrap the JSON in markdown. Do not add commentary.")
+    ..writeln(
+      "Today is ${DateTime.now().toIso8601String().split('T').first}.",
+    )
+    ..writeln()
+    ..writeln("Use this JSON shape exactly:")
+    ..writeln("{")
+    ..writeln('  "canCreateTemplate": boolean,')
+    ..writeln('  "templateName": string|null,')
+    ..writeln('  "contains": string|null,')
+    ..writeln('  "titleTransactionBefore": string|null,')
+    ..writeln('  "titleTransactionAfter": string|null,')
+    ..writeln('  "amountTransactionBefore": string|null,')
+    ..writeln('  "amountTransactionAfter": string|null,')
+    ..writeln('  "extractedTitle": string|null,')
+    ..writeln('  "extractedAmount": number|null,')
+    ..writeln('  "direction": "expense"|"income"|null,')
+    ..writeln('  "suggestedCategoryName": string|null,')
+    ..writeln('  "suggestedAccountName": string|null,')
+    ..writeln('  "reasoning": string|null,')
+    ..writeln('  "confidence": number|null')
+    ..writeln("}")
+    ..writeln()
+    ..writeln("Rules:")
+    ..writeln(
+      "- contains, titleTransactionBefore, titleTransactionAfter, amountTransactionBefore, and amountTransactionAfter must be copied exactly from the notification text below.",
+    )
+    ..writeln(
+      "- Use \"\" for before/after values only when the field starts at the beginning or ends at the end of the notification text.",
+    )
+    ..writeln(
+      "- contains should be a stable literal phrase that identifies similar notifications from the same app. Avoid amounts, dates, reference numbers, and masked account suffixes when possible.",
+    )
+    ..writeln(
+      "- extractedTitle should be the merchant or transaction title to save in the budget app.",
+    )
+    ..writeln(
+      "- extractedAmount must be a positive number with no currency symbols.",
+    )
+    ..writeln(
+      "- direction must be expense for money leaving the account and income for money entering the account.",
+    )
+    ..writeln(
+      "- suggestedCategoryName must be chosen only from the available categories below when confident. Otherwise return null.",
+    )
+    ..writeln(
+      "- suggestedAccountName must be chosen only from the available accounts below when confident. Otherwise return null.",
+    )
+    ..writeln(
+      "- If the notification is too ambiguous or does not have reusable structure, return canCreateTemplate=false and set template fields to null.",
+    )
+    ..writeln()
+    ..writeln("Available categories:");
+
+  for (final TransactionCategory category in categories) {
+    buffer.writeln("- ${category.name}");
+  }
+
+  buffer
+    ..writeln()
+    ..writeln("Available accounts:");
+
+  for (final TransactionWallet wallet in wallets) {
+    final String currency = wallet.currency?.trim().isNotEmpty == true
+        ? " (${wallet.currency})"
+        : "";
+    buffer.writeln("- ${wallet.name}$currency");
+  }
+
+  if (selectedWallet != null) {
+    buffer
+      ..writeln()
+      ..writeln(
+        "Current selected account: ${selectedWallet.name}${selectedWallet.currency == null ? '' : ' (${selectedWallet.currency})'}",
+      );
+  }
+
+  buffer
+    ..writeln()
+    ..writeln("Notification text:")
+    ..writeln("<<<MESSAGE")
+    ..writeln(notificationMessage)
+    ..writeln("MESSAGE");
+
+  return buffer.toString();
+}
+
 String _normalizeBaseUrl(String value) {
   String normalized = value.trim();
   while (normalized.endsWith('/')) {
@@ -772,6 +1111,11 @@ String? _stringFromJson(dynamic value) {
   return text;
 }
 
+String? _stringAllowEmptyFromJson(dynamic value) {
+  if (value == null) return null;
+  return value.toString();
+}
+
 double? _doubleFromJson(dynamic value) {
   if (value == null) return null;
   if (value is num) return value.toDouble();
@@ -782,6 +1126,13 @@ double? _doubleFromJson(dynamic value) {
       .replaceAll(',', '');
   if (cleaned.trim().isEmpty) return null;
   return double.tryParse(cleaned);
+}
+
+int? _intFromJson(dynamic value) {
+  if (value == null) return null;
+  if (value is int) return value;
+  if (value is num) return value.round();
+  return int.tryParse(value.toString().trim());
 }
 
 DateTime? _dateFromJson(dynamic value) {

@@ -2,6 +2,7 @@ import 'package:budget/colors.dart';
 import 'package:budget/database/tables.dart';
 import 'package:budget/functions.dart';
 import 'package:budget/pages/homePage/homePageLineGraph.dart';
+import 'package:budget/struct/notificationCapture.dart';
 import 'package:budget/struct/databaseGlobal.dart';
 import 'package:budget/struct/settings.dart';
 import 'package:budget/widgets/notificationsSettings.dart';
@@ -127,6 +128,7 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "AutoTransactions-canReadEmails": false,
     "notificationScanningDebug": true,
     "notificationScanning": false,
+    "notificationCaptureMode": notificationCaptureModeSmart,
     "notificationCustomPackages": [],
     "accountColorfulAmountsWithArrows": false,
     "netTotalsColorful": false,

@@ -6,7 +6,10 @@ import 'package:budget/pages/addEmailTemplate.dart';
 import 'package:budget/pages/addTransactionPage.dart';
 import 'package:budget/pages/editCategoriesPage.dart';
 import 'package:budget/struct/databaseGlobal.dart';
+import 'package:budget/struct/intelligence.dart';
+import 'package:budget/struct/notificationCapture.dart';
 import 'package:budget/struct/notificationLearning.dart';
+import 'package:budget/struct/notificationsGlobal.dart';
 import 'package:budget/struct/settings.dart';
 import 'package:budget/widgets/accountAndBackup.dart';
 import 'package:budget/widgets/button.dart';
@@ -24,7 +27,7 @@ import 'package:budget/widgets/settingsContainers.dart';
 import 'package:budget/widgets/statusBox.dart';
 import 'package:budget/widgets/tappable.dart';
 import 'package:budget/widgets/textWidgets.dart';
-import 'package:budget/widgets/util/appLinks.dart';
+import 'package:budget/widgets/transactionEntry/transactionEntry.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -39,6 +42,15 @@ import 'addButton.dart';
 StreamSubscription<ServiceNotificationEvent>? notificationListenerSubscription;
 List<String> recentCapturedNotifications = [];
 
+const Duration _notificationDedupWindow = Duration(seconds: 12);
+const Duration _notificationTemplateCacheTtl = Duration(seconds: 30);
+
+final Map<String, DateTime> _recentNotificationFingerprints =
+    <String, DateTime>{};
+final Set<String> _notificationAiTemplateRequestsInFlight = <String>{};
+List<ScannerTemplate> _notificationTemplateCache = <ScannerTemplate>[];
+DateTime? _notificationTemplateCacheUpdatedAt;
+
 class _ResolvedNotificationCategorySelection {
   const _ResolvedNotificationCategorySelection({
     this.mainCategory,
@@ -47,6 +59,54 @@ class _ResolvedNotificationCategorySelection {
 
   final TransactionCategory? mainCategory;
   final TransactionCategory? subCategory;
+}
+
+class _NotificationTemplateResolution {
+  const _NotificationTemplateResolution({
+    required this.template,
+    required this.extractedTitle,
+    required this.amountDouble,
+  });
+
+  final ScannerTemplate template;
+  final String? extractedTitle;
+  final double? amountDouble;
+}
+
+class _NotificationDraft {
+  const _NotificationDraft({
+    required this.template,
+    required this.packageName,
+    required this.rawTitle,
+    required this.title,
+    required this.absoluteAmount,
+    required this.signedAmount,
+    required this.category,
+    required this.subCategory,
+    required this.wallet,
+    required this.direction,
+    required this.confidence,
+    required this.createdTemplateWithAi,
+    required this.hasLearnedValues,
+    required this.hasAssociatedTitle,
+    required this.usedFallbackCategory,
+  });
+
+  final ScannerTemplate template;
+  final String? packageName;
+  final String rawTitle;
+  final String title;
+  final double absoluteAmount;
+  final double signedAmount;
+  final TransactionCategory? category;
+  final TransactionCategory? subCategory;
+  final TransactionWallet? wallet;
+  final NotificationTransactionDirection direction;
+  final int confidence;
+  final bool createdTemplateWithAi;
+  final bool hasLearnedValues;
+  final bool hasAssociatedTitle;
+  final bool usedFallbackCategory;
 }
 
 Future<bool> initNotificationScanning({bool requestPermission = false}) async {
@@ -204,8 +264,464 @@ bool _isFinancialNotification(String packageName, String payload) {
       _knownFinancialPackages.contains(packageName);
 }
 
+String _getCurrentNotificationCaptureMode() {
+  final String configuredMode =
+      appStateSettings[notificationCaptureModeSettingKey]?.toString() ??
+          notificationCaptureModeSmart;
+  if (notificationCaptureModes.contains(configuredMode)) {
+    return configuredMode;
+  }
+  return notificationCaptureModeSmart;
+}
+
+void _storeRecentCapturedNotification(String messageString) {
+  recentCapturedNotifications.insert(0, messageString);
+  if (recentCapturedNotifications.length > 50) {
+    recentCapturedNotifications = recentCapturedNotifications.sublist(0, 50);
+  }
+}
+
+bool _shouldIgnoreDuplicateNotification(String fingerprint) {
+  final DateTime now = DateTime.now();
+  _recentNotificationFingerprints.removeWhere(
+    (_, capturedAt) => now.difference(capturedAt) > _notificationDedupWindow,
+  );
+
+  final DateTime? existing = _recentNotificationFingerprints[fingerprint];
+  if (existing != null && now.difference(existing) <= _notificationDedupWindow) {
+    return true;
+  }
+
+  _recentNotificationFingerprints[fingerprint] = now;
+  return false;
+}
+
+Future<List<ScannerTemplate>> _getNotificationScannerTemplates(
+    {bool forceRefresh = false}) async {
+  final DateTime now = DateTime.now();
+  if (!forceRefresh &&
+      _notificationTemplateCacheUpdatedAt != null &&
+      now.difference(_notificationTemplateCacheUpdatedAt!) <=
+          _notificationTemplateCacheTtl &&
+      _notificationTemplateCache.isNotEmpty) {
+    return _notificationTemplateCache;
+  }
+
+  final List<ScannerTemplate> scannerTemplates =
+      await database.getAllScannerTemplates();
+  scannerTemplates.sort(
+    (a, b) => b.contains.length.compareTo(a.contains.length),
+  );
+  _notificationTemplateCache = scannerTemplates;
+  _notificationTemplateCacheUpdatedAt = now;
+  return _notificationTemplateCache;
+}
+
+_NotificationTemplateResolution? _matchNotificationTemplate(
+  String messageString,
+  List<ScannerTemplate> scannerTemplates,
+) {
+  for (final ScannerTemplate scannerTemplate in scannerTemplates) {
+    if (scannerTemplate.ignore || scannerTemplate.contains.trim().isEmpty) {
+      continue;
+    }
+    if (!messageString.contains(scannerTemplate.contains)) {
+      continue;
+    }
+
+    return _NotificationTemplateResolution(
+      template: scannerTemplate,
+      extractedTitle: getTransactionTitleFromEmail(
+        messageString,
+        scannerTemplate.titleTransactionBefore,
+        scannerTemplate.titleTransactionAfter,
+      ),
+      amountDouble: getTransactionAmountFromEmail(
+        messageString,
+        scannerTemplate.amountTransactionBefore,
+        scannerTemplate.amountTransactionAfter,
+      ),
+    );
+  }
+  return null;
+}
+
+String _normalizeNotificationTitleValue(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+String _buildAutomaticNotificationTemplateName(
+  String? templateName,
+  String? extractedTitle,
+  String? packageName,
+) {
+  final String candidate = (templateName?.trim().isNotEmpty == true
+          ? templateName!.trim()
+          : extractedTitle?.trim().isNotEmpty == true
+              ? extractedTitle!.trim()
+              : packageName?.split('.').last.replaceAll('_', ' ').trim() ??
+                  'Notification')
+      .capitalizeFirst;
+  final String output = 'AI $candidate';
+  if (output.length <= 48) return output;
+  return output.substring(0, 48).trim();
+}
+
+Future<TransactionCategory?> _getFallbackNotificationCategory(
+  NotificationTransactionDirection direction,
+) async {
+  final List<TransactionCategory> categories = await database.getAllCategories();
+  for (final TransactionCategory category in categories) {
+    if (category.income ==
+        (direction == NotificationTransactionDirection.income)) {
+      return category;
+    }
+  }
+  return categories.firstOrNull;
+}
+
+Future<TransactionCategory?> _getMainCategoryForTemplate(
+  TransactionCategory? category,
+) async {
+  if (category == null) return null;
+  if (category.mainCategoryPk?.trim().isNotEmpty == true) {
+    return await database.getCategoryInstanceOrNull(category.mainCategoryPk!);
+  }
+  return category;
+}
+
+Future<ScannerTemplate?> _generateNotificationTemplateWithAi(
+  String messageString, {
+  required String? packageName,
+}) async {
+  final IntelligenceConfig intelligenceConfig = getCurrentIntelligenceConfig();
+  if (!intelligenceConfig.isConfigured) return null;
+
+  final String fingerprint = normalizeNotificationFingerprint(messageString);
+  if (_notificationAiTemplateRequestsInFlight.contains(fingerprint)) {
+    return null;
+  }
+
+  _notificationAiTemplateRequestsInFlight.add(fingerprint);
+  try {
+    final List<TransactionCategory> categories =
+        await database.getAllCategories(includeSubCategories: true);
+    final List<TransactionWallet> wallets = await database.getAllWallets();
+    final TransactionWallet? selectedWallet = await database
+        .getWalletInstanceOrNull(appStateSettings["selectedWalletPk"] ?? "0");
+
+    final NotificationTemplateAnalysis analysis = await analyzeNotificationMessage(
+      notificationMessage: messageString,
+      categories: categories,
+      wallets: wallets,
+      selectedWallet: selectedWallet,
+      config: intelligenceConfig,
+    );
+
+    if (!analysis.canCreateTemplate || !analysis.hasTemplateSegments) {
+      return null;
+    }
+
+    final String? parsedTitle = getTransactionTitleFromEmail(
+      messageString,
+      analysis.titleTransactionBefore ?? '',
+      analysis.titleTransactionAfter ?? '',
+    );
+    final double? parsedAmount = getTransactionAmountFromEmail(
+      messageString,
+      analysis.amountTransactionBefore ?? '',
+      analysis.amountTransactionAfter ?? '',
+    );
+    if (parsedTitle == null || parsedAmount == null) return null;
+
+    final String? aiExtractedTitle = analysis.extractedTitle;
+    if (aiExtractedTitle?.trim().isNotEmpty == true) {
+      final String normalizedParsedTitle =
+          _normalizeNotificationTitleValue(parsedTitle);
+      final String normalizedAiTitle =
+          _normalizeNotificationTitleValue(aiExtractedTitle!);
+      if (normalizedParsedTitle != normalizedAiTitle &&
+          !normalizedParsedTitle.contains(normalizedAiTitle) &&
+          !normalizedAiTitle.contains(normalizedParsedTitle)) {
+        return null;
+      }
+    }
+
+    TransactionCategory? matchedCategory =
+        matchReceiptCategory(analysis.suggestedCategoryName, categories);
+    final _ResolvedNotificationCategorySelection associatedSelection =
+        await _findAssociatedNotificationCategorySelection(parsedTitle);
+    matchedCategory ??=
+        associatedSelection.subCategory ?? associatedSelection.mainCategory;
+
+    final NotificationTransactionDirection direction = analysis.direction ??
+        inferNotificationTransactionDirection(
+          message: messageString,
+          categoryIncome: matchedCategory?.income,
+          parsedAmount: parsedAmount,
+        );
+
+    matchedCategory ??= await _getFallbackNotificationCategory(direction);
+    final TransactionCategory? templateCategory =
+        await _getMainCategoryForTemplate(matchedCategory);
+    final TransactionWallet? matchedWallet =
+        matchReceiptWallet(analysis.suggestedAccountName, wallets) ??
+            selectedWallet;
+
+    final List<ScannerTemplate> existingTemplates =
+        await _getNotificationScannerTemplates();
+    for (final ScannerTemplate scannerTemplate in existingTemplates) {
+      if (scannerTemplate.contains == analysis.contains &&
+          scannerTemplate.titleTransactionBefore ==
+              analysis.titleTransactionBefore &&
+          scannerTemplate.titleTransactionAfter ==
+              analysis.titleTransactionAfter &&
+          scannerTemplate.amountTransactionBefore ==
+              analysis.amountTransactionBefore &&
+          scannerTemplate.amountTransactionAfter ==
+              analysis.amountTransactionAfter) {
+        return scannerTemplate;
+      }
+    }
+
+    final ScannerTemplate template = ScannerTemplate(
+      scannerTemplatePk: '-1',
+      dateCreated: DateTime.now(),
+      dateTimeModified: null,
+      templateName: _buildAutomaticNotificationTemplateName(
+        analysis.templateName,
+        parsedTitle,
+        packageName,
+      ),
+      contains: analysis.contains!.trim(),
+      titleTransactionBefore: analysis.titleTransactionBefore ?? '',
+      titleTransactionAfter: analysis.titleTransactionAfter ?? '',
+      amountTransactionBefore: analysis.amountTransactionBefore ?? '',
+      amountTransactionAfter: analysis.amountTransactionAfter ?? '',
+      defaultCategoryFk:
+          (templateCategory ?? matchedCategory)?.categoryPk ?? '1',
+      walletFk: matchedWallet?.walletPk ?? '-1',
+      ignore: false,
+    );
+
+    await database.createOrUpdateScannerTemplate(template, insert: true);
+    final List<ScannerTemplate> refreshedTemplates =
+        await _getNotificationScannerTemplates(forceRefresh: true);
+    for (final ScannerTemplate scannerTemplate in refreshedTemplates) {
+      if (scannerTemplate.contains == template.contains &&
+          scannerTemplate.titleTransactionBefore ==
+              template.titleTransactionBefore &&
+          scannerTemplate.titleTransactionAfter ==
+              template.titleTransactionAfter &&
+          scannerTemplate.amountTransactionBefore ==
+              template.amountTransactionBefore &&
+          scannerTemplate.amountTransactionAfter ==
+              template.amountTransactionAfter) {
+        return scannerTemplate;
+      }
+    }
+    return null;
+  } catch (e) {
+    debugPrint('Notification AI template generation failed: $e');
+    return null;
+  } finally {
+    _notificationAiTemplateRequestsInFlight.remove(fingerprint);
+  }
+}
+
+Future<_NotificationDraft?> _buildNotificationDraft(
+  String messageString, {
+  bool allowAiTemplateCreation = false,
+}) async {
+  final String? packageName = extractNotificationPackageName(messageString);
+  List<ScannerTemplate> scannerTemplates =
+      await _getNotificationScannerTemplates();
+  _NotificationTemplateResolution? templateResolution =
+      _matchNotificationTemplate(messageString, scannerTemplates);
+  bool createdTemplateWithAi = false;
+
+  if (templateResolution == null && allowAiTemplateCreation) {
+    final ScannerTemplate? aiTemplate = await _generateNotificationTemplateWithAi(
+      messageString,
+      packageName: packageName,
+    );
+    if (aiTemplate != null) {
+      createdTemplateWithAi = true;
+      scannerTemplates = await _getNotificationScannerTemplates(forceRefresh: true);
+      templateResolution = _NotificationTemplateResolution(
+        template: aiTemplate,
+        extractedTitle: getTransactionTitleFromEmail(
+          messageString,
+          aiTemplate.titleTransactionBefore,
+          aiTemplate.titleTransactionAfter,
+        ),
+        amountDouble: getTransactionAmountFromEmail(
+          messageString,
+          aiTemplate.amountTransactionBefore,
+          aiTemplate.amountTransactionAfter,
+        ),
+      );
+      if (templateResolution.extractedTitle == null ||
+          templateResolution.amountDouble == null) {
+        templateResolution = _matchNotificationTemplate(messageString, scannerTemplates);
+      }
+    }
+  }
+
+  if (templateResolution == null ||
+      templateResolution.extractedTitle == null ||
+      templateResolution.amountDouble == null) {
+    return null;
+  }
+
+  final String rawTitle = templateResolution.extractedTitle!;
+  final NotificationLearningSuggestion learnedSuggestion =
+      getNotificationLearningSuggestion(
+    packageName: packageName,
+    rawTitle: rawTitle,
+  );
+
+  final String title =
+      learnedSuggestion.canonicalTitle?.trim().isNotEmpty == true
+          ? learnedSuggestion.canonicalTitle!.trim()
+          : rawTitle;
+
+  final _ResolvedNotificationCategorySelection learnedCategorySelection =
+      await _resolveNotificationCategorySelectionFromPks(
+    categoryPk: learnedSuggestion.categoryPk,
+    subCategoryPk: learnedSuggestion.subCategoryPk,
+  );
+
+  _ResolvedNotificationCategorySelection associatedTitleSelection =
+      await _findAssociatedNotificationCategorySelection(title);
+  if (associatedTitleSelection.mainCategory == null && title != rawTitle) {
+    associatedTitleSelection =
+        await _findAssociatedNotificationCategorySelection(rawTitle);
+  }
+
+  final TransactionCategory? templateCategoryInstance =
+      await database.getCategoryInstanceOrNull(
+    templateResolution.template.defaultCategoryFk,
+  );
+  final NotificationTransactionDirection direction =
+      inferNotificationTransactionDirection(
+    message: messageString,
+    categoryIncome: learnedCategorySelection.mainCategory?.income ??
+        associatedTitleSelection.mainCategory?.income ??
+        templateCategoryInstance?.income,
+    parsedAmount: templateResolution.amountDouble,
+  );
+  final TransactionCategory? fallbackCategory =
+      templateCategoryInstance ?? await _getFallbackNotificationCategory(direction);
+  final _ResolvedNotificationCategorySelection templateCategorySelection =
+      await _resolveNotificationCategorySelection(fallbackCategory);
+
+  final TransactionCategory? category = learnedCategorySelection.mainCategory ??
+      associatedTitleSelection.mainCategory ??
+      templateCategorySelection.mainCategory;
+  final TransactionCategory? subCategory = learnedCategorySelection.subCategory ??
+      associatedTitleSelection.subCategory;
+
+  TransactionWallet? wallet;
+  final String? learnedWalletPk =
+      learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
+  if (learnedWalletPk?.trim().isNotEmpty == true) {
+    wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
+  }
+  wallet ??= templateResolution.template.walletFk == '-1'
+      ? null
+      : await database.getWalletInstanceOrNull(templateResolution.template.walletFk);
+  wallet ??= await database
+      .getWalletInstanceOrNull(appStateSettings['selectedWalletPk'] ?? '0');
+
+  final bool usedFallbackCategory = learnedCategorySelection.mainCategory == null &&
+      associatedTitleSelection.mainCategory == null;
+  final double signedAmount = applyNotificationDirectionToAmount(
+    amount: templateResolution.amountDouble!,
+    direction: direction,
+  );
+  final int confidence = scoreNotificationConfidence(
+    hasTemplate: true,
+    hasParsedTitle: true,
+    hasParsedAmount: true,
+    hasResolvedCategory: category != null,
+    hasResolvedWallet: wallet != null,
+    hasLearnedValues:
+        learnedSuggestion.hasLearnedValues || createdTemplateWithAi,
+    hasAssociatedTitle: associatedTitleSelection.mainCategory != null,
+    usedFallbackCategory: usedFallbackCategory,
+  );
+
+  return _NotificationDraft(
+    template: templateResolution.template,
+    packageName: packageName,
+    rawTitle: rawTitle,
+    title: title,
+    absoluteAmount: templateResolution.amountDouble!.abs(),
+    signedAmount: signedAmount,
+    category: category,
+    subCategory: subCategory,
+    wallet: wallet,
+    direction: direction,
+    confidence: confidence,
+    createdTemplateWithAi: createdTemplateWithAi,
+    hasLearnedValues: learnedSuggestion.hasLearnedValues,
+    hasAssociatedTitle: associatedTitleSelection.mainCategory != null,
+    usedFallbackCategory: usedFallbackCategory,
+  );
+}
+
+Future<Transaction?> _autoCreateNotificationTransaction(
+  _NotificationDraft draft, {
+  DateTime? dateTime,
+}) async {
+  if (draft.category == null) return null;
+
+  final String walletPk =
+      draft.wallet?.walletPk ?? appStateSettings['selectedWalletPk'] ?? '0';
+  final int? rowId = await database.createOrUpdateTransaction(
+    Transaction(
+      transactionPk: '-1',
+      name: draft.title,
+      amount: draft.signedAmount,
+      note: '',
+      categoryFk: draft.category!.categoryPk,
+      subCategoryFk: draft.subCategory?.categoryPk,
+      walletFk: walletPk,
+      dateCreated: dateTime ?? DateTime.now(),
+      dateTimeModified: null,
+      income: draft.direction == NotificationTransactionDirection.income,
+      paid: true,
+      skipPaid: false,
+      methodAdded: MethodAdded.notification,
+    ),
+    insert: true,
+  );
+  if (rowId == null) return null;
+
+  final Transaction transactionJustAdded =
+      await database.getTransactionFromRowId(rowId);
+  flashTransaction(transactionJustAdded.transactionPk, flashCount: 2);
+  if (draft.title.trim().isNotEmpty) {
+    await addAssociatedTitles(
+      draft.title,
+      draft.subCategory ?? draft.category!,
+    );
+  }
+  await learnAcceptedNotificationDraft(
+    packageName: draft.packageName,
+    rawTitle: draft.rawTitle,
+    finalTitle: transactionJustAdded.name,
+    categoryPk: transactionJustAdded.categoryFk,
+    subCategoryPk: transactionJustAdded.subCategoryFk,
+    walletPk: transactionJustAdded.walletFk,
+  );
+  await showNotificationTransactionSavedNotification(transactionJustAdded);
+  return transactionJustAdded;
+}
+
 Future<void> onNotification(ServiceNotificationEvent event) async {
-  if (event.hasRemoved != true) return;
+  if (event.hasRemoved == true) return;
 
   final packageName = event.packageName ?? '';
   final String notificationText =
@@ -214,12 +730,20 @@ Future<void> onNotification(ServiceNotificationEvent event) async {
   // Only process notifications from banking/payment/wallet apps
   if (!_isFinancialNotification(packageName, notificationText)) return;
 
-  final String messageString = getNotificationMessage(event);
+  final String fingerprint = normalizeNotificationFingerprint(
+    [packageName, event.title ?? '', event.content ?? ''].join(' | '),
+  );
+  if (_shouldIgnoreDuplicateNotification(fingerprint)) return;
 
-  recentCapturedNotifications.insert(0, messageString);
-  if (recentCapturedNotifications.length > 50)
-    recentCapturedNotifications = recentCapturedNotifications.sublist(0, 50);
-  await queueTransactionFromMessage(messageString);
+  final String messageString = getNotificationMessage(event);
+  _storeRecentCapturedNotification(messageString);
+  await queueTransactionFromMessage(
+    messageString,
+    willPushRoute: false,
+    allowAutoCreate: true,
+    allowAiTemplateCreation: true,
+    dateTime: DateTime.now(),
+  );
 }
 
 class InitializeNotificationService extends StatefulWidget {
@@ -248,75 +772,32 @@ class _InitializeNotificationServiceState
 }
 
 Future<bool> queueTransactionFromMessage(String messageString,
-    {bool willPushRoute = true, DateTime? dateTime}) async {
-  String? extractedTitle;
-  double? amountDouble;
-  List<ScannerTemplate> scannerTemplates =
-      await database.getAllScannerTemplates();
-  ScannerTemplate? templateFound;
-  final String? packageName = extractNotificationPackageName(messageString);
-
-  for (ScannerTemplate scannerTemplate in scannerTemplates) {
-    if (messageString.contains(scannerTemplate.contains)) {
-      templateFound = scannerTemplate;
-      extractedTitle = getTransactionTitleFromEmail(
-          messageString,
-          scannerTemplate.titleTransactionBefore,
-          scannerTemplate.titleTransactionAfter);
-      amountDouble = getTransactionAmountFromEmail(
-          messageString,
-          scannerTemplate.amountTransactionBefore,
-          scannerTemplate.amountTransactionAfter);
-      break;
-    }
-  }
-
-  if (templateFound == null) return false;
-
-  //if (amountDouble == null) amountDouble = getAmountFromString(title ?? "");
-  // We don't need this line, we can still queue up a transaction without these details,
-  // however maybe the user doesn't want to queue it up if its missing details?
-  if (amountDouble == null || extractedTitle == null) return false;
-  final String rawTitle = extractedTitle;
-
-  final NotificationLearningSuggestion learnedSuggestion =
-      getNotificationLearningSuggestion(
-    packageName: packageName,
-    rawTitle: rawTitle,
+    {
+      bool willPushRoute = true,
+      bool allowAutoCreate = false,
+      bool allowAiTemplateCreation = false,
+      DateTime? dateTime,
+    }) async {
+  final _NotificationDraft? draft = await _buildNotificationDraft(
+    messageString,
+    allowAiTemplateCreation: allowAiTemplateCreation,
   );
+  if (draft == null) return false;
 
-  final String title = learnedSuggestion.canonicalTitle?.trim().isNotEmpty == true
-      ? learnedSuggestion.canonicalTitle!.trim()
-      : rawTitle;
-
-  final _ResolvedNotificationCategorySelection learnedCategorySelection =
-      await _resolveNotificationCategorySelectionFromPks(
-    categoryPk: learnedSuggestion.categoryPk,
-    subCategoryPk: learnedSuggestion.subCategoryPk,
-  );
-
-  _ResolvedNotificationCategorySelection associatedTitleSelection =
-      await _findAssociatedNotificationCategorySelection(title);
-  if (associatedTitleSelection.mainCategory == null && title != rawTitle) {
-    associatedTitleSelection =
-        await _findAssociatedNotificationCategorySelection(rawTitle);
+  if (allowAutoCreate &&
+      shouldAutoCreateNotification(
+        captureMode: _getCurrentNotificationCaptureMode(),
+        confidence: draft.confidence,
+        hasAmount: draft.absoluteAmount > 0,
+        hasTitle: draft.title.trim().isNotEmpty,
+        hasCategory: draft.category != null,
+      )) {
+    final Transaction? createdTransaction = await _autoCreateNotificationTransaction(
+      draft,
+      dateTime: dateTime,
+    );
+    return createdTransaction != null;
   }
-
-  final TransactionCategory? category = learnedCategorySelection.mainCategory ??
-      associatedTitleSelection.mainCategory ??
-      await database.getCategoryInstanceOrNull(templateFound.defaultCategoryFk);
-  final TransactionCategory? subCategory = learnedCategorySelection.subCategory ??
-      associatedTitleSelection.subCategory;
-
-  TransactionWallet? wallet;
-  final String? learnedWalletPk =
-      learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
-  if (learnedWalletPk?.trim().isNotEmpty == true) {
-    wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
-  }
-  wallet ??= templateFound.walletFk == "-1"
-      ? null
-      : await database.getWalletInstanceOrNull(templateFound.walletFk);
 
   if (willPushRoute) {
     await pushRoute(
@@ -324,17 +805,17 @@ Future<bool> queueTransactionFromMessage(String messageString,
       AddTransactionPage(
         useCategorySelectedIncome: true,
         routesToPopAfterDelete: RoutesToPopAfterDelete.None,
-        selectedAmount: amountDouble,
-        selectedTitle: title,
-        selectedCategory: category,
-        selectedSubCategory: subCategory,
+        selectedAmount: draft.signedAmount,
+        selectedTitle: draft.title,
+        selectedCategory: draft.category,
+        selectedSubCategory: draft.subCategory,
         startInitialAddTransactionSequence: false,
-        selectedWallet: wallet,
+        selectedWallet: draft.wallet,
         selectedDate: dateTime,
         onTransactionSaved: (transaction) async {
           await learnAcceptedNotificationDraft(
-            packageName: packageName,
-            rawTitle: rawTitle,
+            packageName: draft.packageName,
+            rawTitle: draft.rawTitle,
             finalTitle: transaction.name,
             categoryPk: transaction.categoryFk,
             subCategoryPk: transaction.subCategoryFk,
@@ -343,21 +824,10 @@ Future<bool> queueTransactionFromMessage(String messageString,
         },
       ),
     );
-  } else {
-    BuildContext? currentContext = navigatorKey.currentContext;
-    if (currentContext == null) return false;
-
-    await processAddTransactionFromParams(currentContext, {
-      "title": title,
-      "categoryPk": category?.categoryPk,
-      "subcategoryPk": subCategory?.categoryPk,
-      "walletPk": wallet?.walletPk,
-      "amount": amountDouble.toString(),
-      "date": dateTime.toString(),
-    });
+    return true;
   }
 
-  return true;
+  return false;
 }
 
 Future<_ResolvedNotificationCategorySelection>
@@ -492,6 +962,8 @@ class _AutoTransactionsPageNotificationsState
 
   @override
   Widget build(BuildContext context) {
+    final IntelligenceConfig intelligenceConfig = getCurrentIntelligenceConfig();
+    final String captureMode = _getCurrentNotificationCaptureMode();
     return PageFramework(
       dragDownToDismiss: true,
       title: "Auto Transactions",
@@ -511,7 +983,7 @@ class _AutoTransactionsPageNotificationsState
               const EdgeInsetsDirectional.only(bottom: 5, start: 20, end: 20),
           child: TextFont(
             text:
-                "Transactions can be created automatically based on your notifications.",
+                "Transactions can be captured instantly from supported financial notifications. Cashew can also learn new notification formats automatically with Intelligence.",
             fontSize: 14,
             maxLines: 10,
           ),
@@ -544,8 +1016,42 @@ class _AutoTransactionsPageNotificationsState
           },
           title: "Notification Transactions",
           description:
-              "When a notification is dismissed and the app is open, attempt to add a transaction given its information. Create a template so Cashew understands the format of a notification.",
+              "When a supported financial app posts a notification, Cashew will try to parse it immediately, auto-learn the format when needed, and send a confirmation notification for captured transactions.",
           initialValue: appStateSettings["notificationScanning"],
+        ),
+        SettingsContainerDropdown(
+          title: "Capture Mode",
+          description: getNotificationCaptureModeDescription(captureMode),
+          initial: captureMode,
+          items: notificationCaptureModes,
+          getLabel: getNotificationCaptureModeLabel,
+          onChanged: (value) async {
+            await updateSettings(
+              notificationCaptureModeSettingKey,
+              value,
+              updateGlobalState: false,
+            );
+            setState(() {});
+          },
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.bolt_outlined
+              : Icons.bolt_rounded,
+        ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: 20,
+            end: 20,
+            top: 6,
+            bottom: 10,
+          ),
+          child: TextFont(
+            text: intelligenceConfig.isConfigured
+                ? "AI auto-template learning is active. If a supported financial app sends a new notification format, Cashew will try to create a reusable parsing template automatically."
+                : "Configure Intelligence in Settings to let Cashew learn new financial notification formats automatically when no template matches.",
+            fontSize: 13,
+            maxLines: 6,
+            textColor: Colors.grey,
+          ),
         ),
         StreamBuilder<List<ScannerTemplate>>(
           stream: database.watchAllScannerTemplates(),
@@ -555,12 +1061,14 @@ class _AutoTransactionsPageNotificationsState
                 return Padding(
                   padding: const EdgeInsetsDirectional.all(5),
                   child: StatusBox(
-                    title: "Notification Configuration Missing",
-                    description: "Please add a configuration.",
+                    title: "No Notification Templates Yet",
+                    description: intelligenceConfig.isConfigured
+                        ? "Cashew will try to learn the first supported notification format automatically. You can still add templates manually below."
+                        : "Add a template manually, or configure Intelligence so Cashew can learn notification formats automatically.",
                     icon: appStateSettings["outlinedIcons"]
-                        ? Icons.warning_outlined
-                        : Icons.warning_rounded,
-                    color: Theme.of(context).colorScheme.error,
+                        ? Icons.auto_awesome_outlined
+                        : Icons.auto_awesome_rounded,
+                    color: Theme.of(context).colorScheme.primary,
                   ),
                 );
               }
