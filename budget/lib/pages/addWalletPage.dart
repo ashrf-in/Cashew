@@ -332,9 +332,13 @@ class _AddWalletPageState extends State<AddWalletPage> {
                 Row(
                   children: [
                     TextFont(
-                        text: (currencies[key]?["Symbol"] ?? "") +
-                            " " +
-                            (currencies[key]?["Code"] ?? "")),
+                        text: getCurrencySymbol(key) == "" ||
+                                getCurrencySymbol(key).toUpperCase() ==
+                                    getCurrencyCode(key).toUpperCase()
+                            ? getCurrencyCode(key)
+                            : getCurrencySymbol(key) +
+                                " " +
+                                getCurrencyCode(key)),
                   ],
                 )
               ],

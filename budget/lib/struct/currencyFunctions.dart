@@ -96,15 +96,38 @@ double? amountRatioFromToCurrency(
   return exchangeRateFromUSDToTarget * exchangeRateFromCurrentToUSD;
 }
 
+String getCurrencyCode(String? currencyKey) {
+  if (currencyKey == null || currencyKey == "") return "";
+
+  String normalizedCurrencyKey = currencyKey.toLowerCase();
+  return (currenciesJSON[normalizedCurrencyKey]?["Code"] ??
+      currenciesJSON[currencyKey]?["Code"] ??
+      currencyKey)
+    .toString()
+    .toUpperCase();
+}
+
+String getCurrencySymbol(String? currencyKey) {
+  if (currencyKey == null || currencyKey == "") return "";
+
+  String normalizedCurrencyKey = currencyKey.toLowerCase();
+  if (normalizedCurrencyKey == "aed") return "AED";
+
+  return (currenciesJSON[normalizedCurrencyKey]?["Symbol"] ??
+      currenciesJSON[currencyKey]?["Symbol"] ??
+      "")
+    .toString();
+}
+
 // assume selected wallets currency
 String getCurrencyString(AllWallets allWallets, {String? currencyKey}) {
   String? selectedWalletCurrency =
       allWallets.indexedByPk[appStateSettings["selectedWalletPk"]]?.currency;
   return currencyKey != null
-      ? (currenciesJSON[currencyKey]?["Symbol"] ?? "")
+    ? getCurrencySymbol(currencyKey)
       : selectedWalletCurrency == null
           ? ""
-          : (currenciesJSON[selectedWalletCurrency]?["Symbol"] ?? "");
+      : getCurrencySymbol(selectedWalletCurrency);
 }
 
 double getCurrencyExchangeRate(

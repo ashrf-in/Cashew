@@ -317,10 +317,12 @@ class CurrencyItem extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
                   if (customCurrency == false &&
-                      currenciesJSON[currencyKey]?["NotKnown"] != true)
+                      currenciesJSON[currencyKey]?["NotKnown"] != true &&
+                      getCurrencySymbol(currencyKey).toUpperCase() !=
+                          getCurrencyCode(currencyKey).toUpperCase())
                     TextFont(
                       key: ValueKey("currencyKey"),
-                      text: currencyKey.toUpperCase(),
+                      text: getCurrencyCode(currencyKey),
                       fontSize: 18,
                       textAlign: TextAlign.center,
                     ),
@@ -328,13 +330,9 @@ class CurrencyItem extends StatelessWidget {
                     key: ValueKey("symbol"),
                     text: customCurrency
                         ? currencyKey.toUpperCase()
-                        : currenciesJSON[currencyKey]?["Symbol"] == null ||
-                                currenciesJSON[currencyKey]?["Symbol"] == ""
-                            ? (currenciesJSON[currencyKey]?["Code"]
-                                    .toString()
-                                    .allCaps ??
-                                "")
-                            : (currenciesJSON[currencyKey]?["Symbol"] ?? ""),
+                        : getCurrencySymbol(currencyKey) == ""
+                            ? getCurrencyCode(currencyKey)
+                            : getCurrencySymbol(currencyKey),
                     autoSizeText: true,
                     maxFontSize: 50,
                     fontSize: customCurrency ||
