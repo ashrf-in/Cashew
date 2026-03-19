@@ -27,6 +27,7 @@ import 'package:budget/pages/editAssociatedTitlesPage.dart';
 import 'package:budget/pages/editBudgetPage.dart';
 import 'package:budget/pages/editCategoriesPage.dart';
 import 'package:budget/pages/editWalletsPage.dart';
+import 'package:budget/pages/intelligenceSettingsPage.dart';
 import 'package:budget/pages/notificationsPage.dart';
 import 'package:budget/pages/subscriptionsPage.dart';
 import 'package:budget/widgets/accountAndBackup.dart';
@@ -568,6 +569,16 @@ class SettingsPageContent extends StatelessWidget {
         //   title: "Auto Transactions",
         //   icon: appStateSettings["outlinedIcons"] ? Icons.auto_fix_high_outlined : Icons.auto_fix_high_rounded,
         // ),
+
+        SettingsContainerOpenPage(
+          openPage: IntelligenceSettingsPage(),
+          title: "Intelligence",
+          description:
+            "Configure OpenAI-compatible and Gemini receipt parsing.",
+          icon: appStateSettings["outlinedIcons"]
+            ? Icons.auto_awesome_outlined
+            : Icons.auto_awesome_rounded,
+        ),
 
         SettingsContainerOpenPage(
             openPage: AutoTransactionsPageEmail(),

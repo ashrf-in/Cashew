@@ -22,23 +22,11 @@ Future<String?> getPhotoAndUpload({required ImageSource source}) async {
       throw ("error-getting-photo");
     }
 
-    var fileBytes;
-    late Stream<List<int>> mediaStream;
-    fileBytes = await photo.readAsBytes();
-    mediaStream = Stream.value(List<int>.from(fileBytes));
-
-    try {
-      return await uploadFileToDrive(
-          fileBytes: fileBytes, fileName: photo.name, mediaStream: mediaStream);
-    } catch (e) {
-      print(
-          "Error uploading file, trying again and requesting new permissions " +
-              e.toString());
-      await signOutGoogle();
-      await signInGoogle(drivePermissionsAttachments: true);
-      return await uploadFileToDrive(
-          fileBytes: fileBytes, fileName: photo.name, mediaStream: mediaStream);
-    }
+    final Uint8List fileBytes = await photo.readAsBytes();
+    return await uploadFileBytesAndGetLink(
+      fileBytes: fileBytes,
+      fileName: photo.name,
+    );
   }, onError: (e) {
     openSnackbar(
       SnackbarMessage(
@@ -68,27 +56,10 @@ Future<String?> getFileAndUpload() async {
       fileBytes = await file.readAsBytes();
     }
 
-    late Stream<List<int>> mediaStream;
-    mediaStream = Stream.value(fileBytes);
-
-    try {
-      return await uploadFileToDrive(
-        fileBytes: fileBytes,
-        fileName: result.files.single.name,
-        mediaStream: mediaStream,
-      );
-    } catch (e) {
-      print(
-          "Error uploading file, trying again and requesting new permissions " +
-              e.toString());
-      await signOutGoogle();
-      await signInGoogle(drivePermissionsAttachments: true);
-      return await uploadFileToDrive(
-        fileBytes: fileBytes,
-        fileName: result.files.single.name,
-        mediaStream: mediaStream,
-      );
-    }
+    return await uploadFileBytesAndGetLink(
+      fileBytes: fileBytes,
+      fileName: result.files.single.name,
+    );
   }, onError: (e) {
     openSnackbar(
       SnackbarMessage(
@@ -102,6 +73,32 @@ Future<String?> getFileAndUpload() async {
   });
   if (result is String) return result;
   return null;
+}
+
+Future<String?> uploadFileBytesAndGetLink({
+  required Uint8List fileBytes,
+  required String fileName,
+}) async {
+  final Stream<List<int>> mediaStream = Stream.value(List<int>.from(fileBytes));
+
+  try {
+    return await uploadFileToDrive(
+      fileBytes: fileBytes,
+      fileName: fileName,
+      mediaStream: mediaStream,
+    );
+  } catch (e) {
+    print(
+        "Error uploading file, trying again and requesting new permissions " +
+            e.toString());
+    await signOutGoogle();
+    await signInGoogle(drivePermissionsAttachments: true);
+    return await uploadFileToDrive(
+      fileBytes: fileBytes,
+      fileName: fileName,
+      mediaStream: Stream.value(List<int>.from(fileBytes)),
+    );
+  }
 }
 
 Future<String?> uploadFileToDrive({

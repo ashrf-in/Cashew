@@ -3,6 +3,7 @@ import 'package:budget/database/tables.dart';
 import 'package:budget/functions.dart';
 import 'package:budget/pages/addBudgetPage.dart';
 import 'package:budget/pages/addCategoryPage.dart';
+import 'package:budget/pages/intelligenceSettingsPage.dart';
 import 'package:budget/pages/addObjectivePage.dart';
 import 'package:budget/pages/addWalletPage.dart';
 import 'package:budget/pages/editAssociatedTitlesPage.dart';
@@ -12,6 +13,7 @@ import 'package:budget/pages/settingsPage.dart';
 import 'package:budget/pages/sharedBudgetSettings.dart';
 import 'package:budget/pages/transactionsListPage.dart';
 import 'package:budget/struct/databaseGlobal.dart';
+import 'package:budget/struct/intelligence.dart';
 import 'package:budget/struct/navBarIconsData.dart';
 import 'package:budget/struct/settings.dart';
 import 'package:budget/struct/upcomingTransactionsFunctions.dart';
@@ -87,6 +89,50 @@ dynamic transactionTypeDisplayToEnum = {
   TransactionSpecialType.credit: "Lent",
 };
 
+class EditableReceiptLineItem {
+  EditableReceiptLineItem({
+    required this.name,
+    required this.amount,
+    this.categoryPk,
+    this.notes,
+    this.include = true,
+  });
+
+  final String name;
+  final double amount;
+  final String? categoryPk;
+  final String? notes;
+  final bool include;
+
+  EditableReceiptLineItem copyWith({
+    String? name,
+    double? amount,
+    String? categoryPk,
+    bool clearCategoryPk = false,
+    String? notes,
+    bool clearNotes = false,
+    bool? include,
+  }) {
+    return EditableReceiptLineItem(
+      name: name ?? this.name,
+      amount: amount ?? this.amount,
+      categoryPk: clearCategoryPk ? null : (categoryPk ?? this.categoryPk),
+      notes: clearNotes ? null : (notes ?? this.notes),
+      include: include ?? this.include,
+    );
+  }
+}
+
+class ResolvedReceiptCategorySelection {
+  const ResolvedReceiptCategorySelection({
+    this.mainCategory,
+    this.subCategory,
+  });
+
+  final TransactionCategory? mainCategory;
+  final TransactionCategory? subCategory;
+}
+
 class AddTransactionPage extends StatefulWidget {
   AddTransactionPage({
     Key? key,
@@ -150,6 +196,8 @@ class _AddTransactionPageState extends State<AddTransactionPage>
   String? selectedObjectivePk;
   String? selectedObjectiveLoanPk;
   String? selectedBudgetPk;
+  ReceiptAnalysis? scannedReceiptAnalysis;
+  List<EditableReceiptLineItem> editableReceiptLineItems = [];
   Budget? selectedBudget;
   bool selectedPaid = true;
   bool selectedBudgetIsShared = false;
@@ -368,6 +416,741 @@ class _AddTransactionPageState extends State<AddTransactionPage>
     setState(() {
       selectedWalletPk = selectedWalletPkPassed;
     });
+  }
+
+  void addAttachmentLinkToCurrentNote(String? link) {
+    if (link == null || link.trim().isEmpty) return;
+    if (_noteInputController.text.contains(link)) return;
+
+    final String noteUpdated = _noteInputController.text +
+        (_noteInputController.text == "" ? "" : "\n") +
+        link +
+        " ";
+    setSelectedNoteController(noteUpdated);
+  }
+
+  TransactionCategory? _findCategoryByPk(
+    String? categoryPk,
+    List<TransactionCategory> categories,
+  ) {
+    if (categoryPk == null) return null;
+
+    for (final TransactionCategory category in categories) {
+      if (category.categoryPk == categoryPk) {
+        return category;
+      }
+    }
+    return null;
+  }
+
+  ResolvedReceiptCategorySelection _resolveReceiptCategorySelection(
+    TransactionCategory? category,
+    List<TransactionCategory> categories,
+  ) {
+    if (category == null) {
+      return const ResolvedReceiptCategorySelection();
+    }
+    if (category.mainCategoryPk == null) {
+      return ResolvedReceiptCategorySelection(mainCategory: category);
+    }
+
+    final TransactionCategory? mainCategory =
+        _findCategoryByPk(category.mainCategoryPk, categories);
+    return ResolvedReceiptCategorySelection(
+      mainCategory: mainCategory,
+      subCategory: category,
+    );
+  }
+
+  ResolvedReceiptCategorySelection _resolveReceiptCategorySelectionByPk(
+    String? categoryPk,
+    List<TransactionCategory> categories,
+  ) {
+    return _resolveReceiptCategorySelection(
+      _findCategoryByPk(categoryPk, categories),
+      categories,
+    );
+  }
+
+  String _getReceiptCategoryDisplay(
+    String? categoryPk,
+    List<TransactionCategory> categories,
+  ) {
+    final TransactionCategory? category = _findCategoryByPk(categoryPk, categories);
+    if (category == null) return "Uncategorized";
+    if (category.mainCategoryPk == null) return category.name;
+
+    final TransactionCategory? mainCategory =
+        _findCategoryByPk(category.mainCategoryPk, categories);
+    if (mainCategory == null) return category.name;
+    return "${mainCategory.name} > ${category.name}";
+  }
+
+  List<EditableReceiptLineItem> _buildEditableReceiptLineItems(
+    ReceiptAnalysis analysis,
+    List<TransactionCategory> categories,
+  ) {
+    final List<TransactionCategory> expenseCategories = categories
+        .where((category) => category.income == false && category.categoryPk != "0")
+        .toList();
+
+    return analysis.lineItems
+        .where((item) => (item.amount ?? 0) > 0)
+        .map((item) {
+          final TransactionCategory? matchedCategory = matchReceiptCategory(
+            item.suggestedCategoryName,
+            expenseCategories,
+          );
+          return EditableReceiptLineItem(
+            name: item.name,
+            amount: (item.amount ?? 0).abs(),
+            categoryPk: matchedCategory?.categoryPk,
+            notes: item.notes,
+            include: true,
+          );
+        })
+        .toList();
+  }
+
+  bool get canCreateSplitReceiptTransactions {
+    return widget.transaction == null &&
+        editableReceiptLineItems
+                .where((item) => item.include && item.amount > 0)
+                .length >=
+            2;
+  }
+
+  String? getReceiptDraftSummaryLabel() {
+    if (scannedReceiptAnalysis == null) return null;
+
+    final ReceiptAnalysis analysis = scannedReceiptAnalysis!;
+    final List<String> parts = [];
+    if (analysis.merchantName?.trim().isNotEmpty == true) {
+      parts.add(analysis.merchantName!.trim());
+    }
+    if (analysis.totalAmount != null) {
+      parts.add(
+        _formatReceiptAmount(analysis.totalAmount, analysis.currencyCode),
+      );
+    }
+
+    final int splitItemsCount = editableReceiptLineItems
+      .where((item) => item.include && item.amount > 0)
+        .length;
+    if (splitItemsCount > 0) {
+      parts.add("$splitItemsCount items");
+    }
+
+    if (parts.isEmpty) return "Review receipt draft";
+    return "Review receipt draft: ${parts.join(' | ')}";
+  }
+
+  String _formatReceiptAmount(double? amount, String? currencyCode) {
+    if (amount == null) return "Unknown amount";
+    final String code = (currencyCode ?? "").trim();
+    final String formattedAmount = amount.toStringAsFixed(2);
+    if (code.isEmpty) return formattedAmount;
+    return "$code $formattedAmount";
+  }
+
+  String _buildReceiptSummaryNote(ReceiptAnalysis analysis) {
+    final List<String> lines = ["AI Receipt Summary:"];
+
+    if (analysis.merchantName?.trim().isNotEmpty == true) {
+      lines.add("Merchant: ${analysis.merchantName!.trim()}");
+    }
+    if (analysis.transactionDate != null) {
+      lines.add(
+        "Date: ${analysis.transactionDate!.toIso8601String().split('T').first}",
+      );
+    }
+    if (analysis.totalAmount != null) {
+      lines.add(
+        "Total: ${_formatReceiptAmount(analysis.totalAmount, analysis.currencyCode)}",
+      );
+    }
+    if (analysis.taxAmount != null) {
+      lines.add(
+        "Tax: ${_formatReceiptAmount(analysis.taxAmount, analysis.currencyCode)}",
+      );
+    }
+    if (analysis.lineItems.isNotEmpty) {
+      lines.add("Items:");
+      for (final ReceiptLineItemAnalysis item in analysis.lineItems.take(6)) {
+        final List<String> itemParts = [
+          item.name,
+          if (item.amount != null)
+            _formatReceiptAmount(item.amount, analysis.currencyCode),
+          if (item.suggestedCategoryName?.trim().isNotEmpty == true)
+            item.suggestedCategoryName!.trim(),
+        ];
+        lines.add("- ${itemParts.join(' | ')}");
+      }
+      if (analysis.lineItems.length > 6) {
+        lines.add("- ${analysis.lineItems.length - 6} more items");
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  String _mergeReceiptSummaryWithExistingNote(
+    String existingNote,
+    ReceiptAnalysis analysis,
+  ) {
+    const String marker = "AI Receipt Summary:";
+    final String summary = _buildReceiptSummaryNote(analysis);
+    final int markerIndex = existingNote.indexOf(marker);
+    final String cleaned = markerIndex >= 0
+        ? existingNote.substring(0, markerIndex).trimRight()
+        : existingNote.trimRight();
+    final String merged = cleaned.isEmpty ? summary : "$cleaned\n\n$summary";
+    if (merged.length <= NOTE_LIMIT) return merged;
+    return merged.substring(0, NOTE_LIMIT);
+  }
+
+  String _buildSplitTransactionTitle(String? merchantName, String itemName) {
+    final String trimmedItemName = itemName.trim();
+    final String trimmedMerchant = (merchantName ?? "").trim();
+    if (trimmedMerchant.isEmpty) return trimmedItemName;
+
+    final String normalizedMerchant = trimmedMerchant.toLowerCase();
+    final String normalizedItem = trimmedItemName.toLowerCase();
+    if (normalizedItem.contains(normalizedMerchant)) {
+      return trimmedItemName;
+    }
+    return "$trimmedMerchant - $trimmedItemName";
+  }
+
+  void _showReceiptConfigurationPopup() {
+    openPopup(
+      context,
+      icon: appStateSettings["outlinedIcons"]
+          ? Icons.auto_awesome_outlined
+          : Icons.auto_awesome_rounded,
+      title: "Intelligence Not Configured",
+      description:
+          "Add an API key and a vision-capable model in Intelligence settings before scanning receipts.",
+      onCancelLabel: "Cancel",
+      onCancel: () {
+        popRoute(context);
+      },
+      onSubmitLabel: "Open Settings",
+      onSubmit: () {
+        popRoute(context);
+        pushRoute(context, IntelligenceSettingsPage());
+      },
+    );
+  }
+
+  void _handleReceiptScanError(dynamic error) {
+    final String message = error.toString();
+    if (message.contains("Configure an API key") ||
+        message.contains("Select a model")) {
+      _showReceiptConfigurationPopup();
+      return;
+    }
+
+    openSnackbar(
+      SnackbarMessage(
+        title: "Could Not Scan Receipt",
+        description: message,
+        icon: appStateSettings["outlinedIcons"]
+            ? Icons.error_outline
+            : Icons.error_rounded,
+      ),
+    );
+  }
+
+  Future<void> openReceiptScanOptions() async {
+    if (await checkLockedFeatureIfInDemoMode(context) == false) return;
+
+    openBottomSheet(
+      context,
+      useCustomController: true,
+      reAssignBottomSheetControllerGlobal: false,
+      PopupFramework(
+        title: "Scan Receipt",
+        subtitle:
+            "Capture a receipt image and let AI draft the transaction or split it into itemized entries.",
+        child: Column(
+          children: [
+            if (kIsWeb == false)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(bottom: 13),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButtonStacked(
+                        filled: false,
+                        alignStart: true,
+                        alignBeside: true,
+                        padding: EdgeInsetsDirectional.symmetric(
+                            horizontal: 20, vertical: 20),
+                        text: "Take Photo",
+                        iconData: appStateSettings["outlinedIcons"]
+                            ? Icons.camera_alt_outlined
+                            : Icons.camera_alt_rounded,
+                        onTap: () async {
+                          popRoute(context);
+                          await scanReceipt(ReceiptCaptureSource.camera);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsetsDirectional.only(bottom: 13),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButtonStacked(
+                      filled: false,
+                      alignStart: true,
+                      alignBeside: true,
+                      padding: EdgeInsetsDirectional.symmetric(
+                          horizontal: 20, vertical: 20),
+                      text: kIsWeb ? "Select Image" : "Choose Photo",
+                      iconData: appStateSettings["outlinedIcons"]
+                          ? Icons.photo_library_outlined
+                          : Icons.photo_library_rounded,
+                      onTap: () async {
+                        popRoute(context);
+                        await scanReceipt(
+                          kIsWeb
+                              ? ReceiptCaptureSource.file
+                              : ReceiptCaptureSource.gallery,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsetsDirectional.only(bottom: 13),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButtonStacked(
+                      filled: false,
+                      alignStart: true,
+                      alignBeside: true,
+                      padding: EdgeInsetsDirectional.symmetric(
+                          horizontal: 20, vertical: 20),
+                      text: "Choose File",
+                      iconData: appStateSettings["outlinedIcons"]
+                          ? Icons.file_open_outlined
+                          : Icons.file_open_rounded,
+                      onTap: () async {
+                        popRoute(context);
+                        await scanReceipt(ReceiptCaptureSource.file);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> scanReceipt(ReceiptCaptureSource source) async {
+    openLoadingPopup(context);
+    try {
+      final ReceiptImageSelection image =
+          await pickReceiptImage(source: source);
+      final List<TransactionCategory> categories =
+          await database.getAllCategories(includeSubCategories: true);
+      final List<TransactionWallet> wallets = await database.getAllWallets();
+      final ReceiptAnalysis analysis = await analyzeReceiptImage(
+        image: image,
+        categories: categories,
+        wallets: wallets,
+        selectedWallet: getSelectedWallet(listen: false),
+      );
+      String? attachmentLink;
+      dynamic attachmentError;
+      try {
+        attachmentLink = await uploadFileBytesAndGetLink(
+          fileBytes: image.bytes,
+          fileName: image.fileName,
+        );
+      } catch (error) {
+        attachmentError = error;
+      }
+      popRoute(context);
+
+      applyReceiptAnalysisToForm(
+        analysis,
+        categories,
+        wallets,
+        attachmentLink: attachmentLink,
+      );
+      setState(() {
+        scannedReceiptAnalysis = analysis;
+        editableReceiptLineItems = _buildEditableReceiptLineItems(
+          analysis,
+          categories,
+        );
+      });
+
+      if (attachmentError != null) {
+        openSnackbar(
+          SnackbarMessage(
+            title: "Receipt Parsed",
+            description:
+                "The draft was created, but the receipt image could not be attached automatically. ${attachmentError.toString()}",
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.link_off_outlined
+                : Icons.link_off_rounded,
+          ),
+        );
+      }
+
+      await openReceiptAnalysisReview(autoOpened: true);
+    } catch (error) {
+      popRoute(context);
+      _handleReceiptScanError(error);
+    }
+  }
+
+  void applyReceiptAnalysisToForm(
+    ReceiptAnalysis analysis,
+    List<TransactionCategory> categories,
+    List<TransactionWallet> wallets,
+    {String? attachmentLink}
+  ) {
+    final List<TransactionCategory> expenseCategories = categories
+        .where((category) => category.income == false && category.categoryPk != "0")
+        .toList();
+    final TransactionCategory? matchedCategory =
+        matchReceiptCategory(analysis.suggestedCategoryName, expenseCategories);
+    final TransactionWallet? matchedWallet =
+        matchReceiptWallet(analysis.suggestedAccountName, wallets);
+    final ResolvedReceiptCategorySelection categorySelection =
+        _resolveReceiptCategorySelection(matchedCategory, categories);
+
+    if (widget.transaction == null && selectedType != null) {
+      setSelectedType("Default");
+    }
+    setSelectedIncome(false);
+    if (matchedWallet != null) {
+      setSelectedWalletPk(matchedWallet.walletPk);
+    }
+    if (categorySelection.mainCategory != null) {
+      setSelectedCategory(categorySelection.mainCategory!);
+      setSelectedSubCategory(categorySelection.subCategory);
+    } else if (matchedCategory != null) {
+      setSelectedCategory(matchedCategory);
+    }
+    if (matchedCategory == null) {
+      setSelectedSubCategory(null);
+    }
+
+    if (analysis.totalAmount != null) {
+      setSelectedAmount(
+        analysis.totalAmount!.abs(),
+        analysis.totalAmount!.toStringAsFixed(2),
+      );
+    }
+    if (analysis.transactionDate != null) {
+      setState(() {
+        selectedDate = analysis.transactionDate!;
+      });
+    }
+
+    final String nextTitle = (analysis.title?.trim().isNotEmpty == true
+            ? analysis.title!.trim()
+            : analysis.merchantName?.trim()) ??
+        "";
+    if (nextTitle.isNotEmpty) {
+      setSelectedTitle(nextTitle);
+    }
+
+    final String mergedNote = _mergeReceiptSummaryWithExistingNote(
+      _noteInputController.text,
+      analysis,
+    );
+    setSelectedNoteController(mergedNote);
+    addAttachmentLinkToCurrentNote(attachmentLink);
+  }
+
+  Future<bool> openReceiptSplitEditor() async {
+    if (editableReceiptLineItems.isEmpty) return false;
+
+    final List<TransactionCategory> categories =
+        await database.getAllCategories(includeSubCategories: true);
+    final dynamic result = await openBottomSheet(
+      context,
+      ReceiptSplitItemsEditorPopup(
+        initialItems: editableReceiptLineItems,
+        categories: categories,
+        currencyCode: scannedReceiptAnalysis?.currencyCode,
+      ),
+    );
+
+    if (result is List<EditableReceiptLineItem>) {
+      setState(() {
+        editableReceiptLineItems = result;
+      });
+      return await createSplitTransactionsFromReceipt(
+        lineItems: result,
+        categoriesOverride: categories,
+      );
+    }
+    return false;
+  }
+
+  Future<void> openReceiptAnalysisReview({bool autoOpened = false}) async {
+    if (scannedReceiptAnalysis == null) return;
+
+    final ReceiptAnalysis analysis = scannedReceiptAnalysis!;
+    final List<TransactionCategory> categories =
+        await database.getAllCategories(includeSubCategories: true);
+    final List<EditableReceiptLineItem> splitItems = editableReceiptLineItems;
+    final double splitTotal = splitItems.fold<double>(
+      0,
+      (sum, item) => sum + (item.include ? item.amount : 0),
+    );
+
+    await openBottomSheet(
+      context,
+      PopupFramework(
+        title: autoOpened ? "Receipt Parsed" : "Receipt Draft",
+        subtitle: canCreateSplitReceiptTransactions
+            ? "The form was filled from the receipt. Keep the single draft or create split transactions from the detected line items."
+            : "The form was filled from the receipt draft.",
+        child: Column(
+          children: [
+            SettingsContainer(
+              enableBorderRadius: true,
+              title: analysis.merchantName?.trim().isNotEmpty == true
+                  ? analysis.merchantName!.trim()
+                  : "Receipt",
+              description: [
+                if (analysis.totalAmount != null)
+                  _formatReceiptAmount(analysis.totalAmount, analysis.currencyCode),
+                if (analysis.transactionDate != null)
+                  analysis.transactionDate!.toIso8601String().split('T').first,
+                if (analysis.suggestedCategoryName?.trim().isNotEmpty == true)
+                  analysis.suggestedCategoryName!.trim(),
+                if (analysis.suggestedAccountName?.trim().isNotEmpty == true)
+                  analysis.suggestedAccountName!.trim(),
+              ].join(' | '),
+              icon: appStateSettings["outlinedIcons"]
+                  ? Icons.receipt_long_outlined
+                  : Icons.receipt_long_rounded,
+            ),
+            if (analysis.taxAmount != null)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(top: 8),
+                child: SettingsContainer(
+                  enableBorderRadius: true,
+                  title: "Tax",
+                  description:
+                      _formatReceiptAmount(analysis.taxAmount, analysis.currencyCode),
+                  icon: appStateSettings["outlinedIcons"]
+                      ? Icons.percent_outlined
+                      : Icons.percent_rounded,
+                ),
+              ),
+            if (splitItems.isNotEmpty)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(top: 14),
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: TextFont(
+                    text: "Detected line items",
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    textColor: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
+            for (final EditableReceiptLineItem item in splitItems.take(12))
+              Padding(
+                padding: const EdgeInsetsDirectional.only(top: 8),
+                child: SettingsContainer(
+                  enableBorderRadius: true,
+                  title: item.include ? item.name : "${item.name} (Excluded)",
+                  description: [
+                    _formatReceiptAmount(item.amount, analysis.currencyCode),
+                    _getReceiptCategoryDisplay(item.categoryPk, categories),
+                    if (item.notes?.trim().isNotEmpty == true)
+                      item.notes!.trim(),
+                  ].join(' | '),
+                  icon: appStateSettings["outlinedIcons"]
+                      ? Icons.receipt_outlined
+                      : Icons.receipt_rounded,
+                ),
+              ),
+            if (splitItems.length > 12)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(top: 10),
+                child: TextFont(
+                  text: "${splitItems.length - 12} more items omitted from preview.",
+                  fontSize: 13,
+                  textColor: getColor(context, "textLight"),
+                  maxLines: 3,
+                ),
+              ),
+            if (canCreateSplitReceiptTransactions)
+              Padding(
+                padding: const EdgeInsetsDirectional.only(top: 12),
+                child: TextFont(
+                  text:
+                      "Split total: ${_formatReceiptAmount(splitTotal, analysis.currencyCode)}${analysis.totalAmount == null ? '' : ' | Receipt total: ${_formatReceiptAmount(analysis.totalAmount, analysis.currencyCode)}'}",
+                  fontSize: 13,
+                  textColor: getColor(context, "textLight"),
+                  maxLines: 3,
+                ),
+              ),
+            SizedBox(height: 15),
+            Row(
+              children: [
+                Expanded(
+                  child: Button(
+                    label: canCreateSplitReceiptTransactions
+                        ? "Keep Single Draft"
+                        : "Close",
+                    color: Theme.of(context).colorScheme.tertiaryContainer,
+                    textColor:
+                        Theme.of(context).colorScheme.onTertiaryContainer,
+                    onTap: () {
+                      popRoute(context);
+                    },
+                  ),
+                ),
+                if (canCreateSplitReceiptTransactions) SizedBox(width: 10),
+                if (canCreateSplitReceiptTransactions)
+                  Expanded(
+                    child: Button(
+                      label: "Edit Split Items",
+                      onTap: () async {
+                        final bool success = await openReceiptSplitEditor();
+                        if (success) {
+                          popRoute(context);
+                          popRoute(context);
+                        }
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<bool> createSplitTransactionsFromReceipt({
+    List<EditableReceiptLineItem>? lineItems,
+    List<TransactionCategory>? categoriesOverride,
+  }) async {
+    if (scannedReceiptAnalysis == null) return false;
+
+    final ReceiptAnalysis analysis = scannedReceiptAnalysis!;
+    final List<EditableReceiptLineItem> splitItems =
+        (lineItems ?? editableReceiptLineItems)
+            .where((item) => item.include && item.amount > 0)
+            .toList();
+    if (splitItems.isEmpty) {
+      openSnackbar(
+        SnackbarMessage(
+          title: "Split Not Available",
+          description:
+              "Select at least one line item before creating split transactions.",
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.info_outline
+              : Icons.info_rounded,
+        ),
+      );
+      return false;
+    }
+
+    openLoadingPopup(context);
+    try {
+      final List<TransactionCategory> categories = categoriesOverride ??
+        await database.getAllCategories(includeSubCategories: true);
+      final List<TransactionCategory> expenseCategories = categories
+          .where((category) => category.income == false && category.categoryPk != "0")
+          .toList();
+      if (expenseCategories.isEmpty) {
+        throw ("Create at least one expense category before splitting a receipt.");
+      }
+
+        final TransactionCategory fallbackCategory =
+          matchReceiptCategory(analysis.suggestedCategoryName, expenseCategories) ??
+            selectedSubCategory ??
+            selectedCategory ??
+            expenseCategories.first;
+        final ResolvedReceiptCategorySelection fallbackSelection =
+          _resolveReceiptCategorySelection(fallbackCategory, categories);
+
+      final Transaction baseTransaction = createTransaction().copyWith(
+        transactionPk: "-1",
+        income: false,
+        type: const Value(null),
+        periodLength: const Value(null),
+        reoccurrence: const Value(null),
+        endDate: const Value(null),
+        upcomingTransactionNotification: const Value(null),
+        paid: true,
+        skipPaid: false,
+        createdAnotherFutureTransaction: const Value(null),
+        subCategoryFk: const Value(null),
+      );
+
+      for (final EditableReceiptLineItem item in splitItems) {
+        final ResolvedReceiptCategorySelection itemSelection =
+            _resolveReceiptCategorySelectionByPk(item.categoryPk, categories);
+        final TransactionCategory transactionCategory =
+            itemSelection.mainCategory ?? fallbackSelection.mainCategory ?? fallbackCategory;
+        final TransactionCategory? transactionSubCategory =
+            itemSelection.subCategory ?? fallbackSelection.subCategory;
+
+        await database.createOrUpdateTransaction(
+          insert: true,
+          baseTransaction.copyWith(
+            transactionPk: "-1",
+            name: _buildSplitTransactionTitle(analysis.merchantName, item.name),
+            amount: -item.amount.abs(),
+            note: _noteInputController.text,
+            categoryFk: transactionCategory.categoryPk,
+            subCategoryFk: Value(transactionSubCategory?.categoryPk),
+            dateTimeModified: const Value(null),
+          ),
+        );
+      }
+
+      popRoute(context);
+      openSnackbar(
+        SnackbarMessage(
+          title: "Split Receipt Created",
+          description: "Created ${splitItems.length} transactions from the receipt.",
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.done_all_outlined
+              : Icons.done_all_rounded,
+        ),
+      );
+      return true;
+    } catch (error) {
+      popRoute(context);
+      openSnackbar(
+        SnackbarMessage(
+          title: "Could Not Create Split Transactions",
+          description: error.toString(),
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.error_outline
+              : Icons.error_rounded,
+        ),
+      );
+      return false;
+    }
   }
 
   Future<Transaction> addDefaultMissingValues(Transaction transaction) async {
@@ -626,9 +1409,6 @@ class _AddTransactionPageState extends State<AddTransactionPage>
     bool? createdAnotherFutureTransaction = widget.transaction != null
         ? widget.transaction!.createdAnotherFutureTransaction
         : null;
-    bool paid = widget.transaction != null
-        ? widget.transaction!.paid
-        : selectedType == null;
     bool skipPaid = widget.transaction != null
         ? widget.transaction!.skipPaid
         : selectedType == null;
@@ -640,10 +1420,8 @@ class _AddTransactionPageState extends State<AddTransactionPage>
 
       if ([TransactionSpecialType.credit, TransactionSpecialType.debt]
           .contains(selectedType)) {
-        paid = true;
         skipPaid = false;
       } else {
-        paid = false;
         skipPaid = false;
       }
     }
@@ -1047,6 +1825,18 @@ class _AddTransactionPageState extends State<AddTransactionPage>
     );
   }
 
+  Future<void> _handleBackNavigation() async {
+    if (widget.transaction != null) {
+      discardChangesPopup(
+        context,
+        previousObject: await addDefaultMissingValues(widget.transaction!),
+        currentObject: await createTransaction(),
+      );
+    } else {
+      showDiscardChangesPopupIfNotEditing();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     Color categoryColor = dynamicPastel(
@@ -1084,6 +1874,11 @@ class _AddTransactionPageState extends State<AddTransactionPage>
           padding: const EdgeInsetsDirectional.symmetric(horizontal: 22),
           child: TransactionNotesTextInput(
             noteInputController: _noteInputController,
+            openReceiptScanner: openReceiptScanOptions,
+            receiptDraftSummaryLabel: getReceiptDraftSummaryLabel(),
+            reviewReceiptDraft: () {
+              openReceiptAnalysisReview();
+            },
             setNotesInputFocused: (isFocused) {
               setState(() {
                 notesInputFocused = isFocused;
@@ -2020,18 +2815,11 @@ class _AddTransactionPageState extends State<AddTransactionPage>
       ),
     );
 
-    return WillPopScope(
-      onWillPop: () async {
-        if (widget.transaction != null) {
-          discardChangesPopup(
-            context,
-            previousObject: await addDefaultMissingValues(widget.transaction!),
-            currentObject: await createTransaction(),
-          );
-        } else {
-          showDiscardChangesPopupIfNotEditing();
-        }
-        return false;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        unawaited(_handleBackNavigation());
       },
       child: PageFramework(
         belowAppBarPaddingWhenCenteredTitleSmall: 0,
@@ -2044,29 +2832,11 @@ class _AddTransactionPageState extends State<AddTransactionPage>
                 ? "edit-record".tr()
                 : "edit-transaction".tr(),
         dragDownToDismiss: true,
-        onBackButton: () async {
-          if (widget.transaction != null) {
-            discardChangesPopup(
-              context,
-              previousObject:
-                  await addDefaultMissingValues(widget.transaction!),
-              currentObject: await createTransaction(),
-            );
-          } else {
-            showDiscardChangesPopupIfNotEditing();
-          }
+        onBackButton: () {
+          unawaited(_handleBackNavigation());
         },
-        onDragDownToDismiss: () async {
-          if (widget.transaction != null) {
-            discardChangesPopup(
-              context,
-              previousObject:
-                  await addDefaultMissingValues(widget.transaction!),
-              currentObject: await createTransaction(),
-            );
-          } else {
-            showDiscardChangesPopupIfNotEditing();
-          }
+        onDragDownToDismiss: () {
+          unawaited(_handleBackNavigation());
         },
         actions: [
           widget.transaction != null
@@ -3715,7 +4485,7 @@ class SelectTransactionTypePopup extends StatelessWidget {
                     openPage: Container(),
                     containerColor: Theme.of(context)
                         .colorScheme
-                        .background
+                      .surface
                         .withOpacity(0.5),
                     transaction: Transaction(
                       transactionPk: "-1",
@@ -4223,6 +4993,7 @@ class LinkInNotes extends StatelessWidget {
   const LinkInNotes({
     required this.link,
     required this.onTap,
+    this.displayText,
     this.onLongPress,
     this.iconData,
     this.iconDataAfter,
@@ -4232,6 +5003,7 @@ class LinkInNotes extends StatelessWidget {
   });
   final String link;
   final VoidCallback onTap;
+  final String? displayText;
   final VoidCallback? onLongPress;
   final IconData? iconData;
   final IconData? iconDataAfter;
@@ -4265,7 +5037,7 @@ class LinkInNotes extends StatelessWidget {
             SizedBox(width: 10),
             Expanded(
               child: TextFont(
-                text: getDomainNameFromURL(link),
+                text: displayText ?? getDomainNameFromURL(link),
                 fontSize: 16,
                 maxLines: 1,
               ),
@@ -4284,11 +5056,17 @@ class TransactionNotesTextInput extends StatefulWidget {
     required this.noteInputController,
     required this.setNotesInputFocused,
     required this.setSelectedNoteController,
+    this.openReceiptScanner,
+    this.receiptDraftSummaryLabel,
+    this.reviewReceiptDraft,
     super.key,
   });
   final TextEditingController noteInputController;
   final Function(bool) setNotesInputFocused;
   final Function(String note, {bool setInput}) setSelectedNoteController;
+  final VoidCallback? openReceiptScanner;
+  final String? receiptDraftSummaryLabel;
+  final VoidCallback? reviewReceiptDraft;
 
   @override
   State<TransactionNotesTextInput> createState() =>
@@ -4395,11 +5173,43 @@ class _TransactionNotesTextInputState extends State<TransactionNotesTextInput> {
                   )
                 : getColor(context, "lightDarkAccent"),
           ),
+          if (widget.openReceiptScanner != null)
+            LinkInNotes(
+              color: (appStateSettings["materialYou"]
+                  ? Theme.of(context).colorScheme.secondaryContainer
+                  : getColor(context, "canvasContainer")),
+              link: "scan-receipt",
+              displayText: "Scan receipt with AI",
+              iconData: appStateSettings["outlinedIcons"]
+                  ? Icons.auto_awesome_outlined
+                  : Icons.auto_awesome_rounded,
+              iconDataAfter: appStateSettings["outlinedIcons"]
+                  ? Icons.add_outlined
+                  : Icons.add_rounded,
+              onTap: widget.openReceiptScanner!,
+            ),
+          if (widget.receiptDraftSummaryLabel != null &&
+              widget.reviewReceiptDraft != null)
+            LinkInNotes(
+              color: (appStateSettings["materialYou"]
+                  ? Theme.of(context).colorScheme.secondaryContainer
+                  : getColor(context, "canvasContainer")),
+              link: "review-receipt-draft",
+              displayText: widget.receiptDraftSummaryLabel,
+              iconData: appStateSettings["outlinedIcons"]
+                  ? Icons.receipt_long_outlined
+                  : Icons.receipt_long_rounded,
+              iconDataAfter: appStateSettings["outlinedIcons"]
+                  ? Icons.chevron_right_outlined
+                  : Icons.chevron_right_rounded,
+              onTap: widget.reviewReceiptDraft!,
+            ),
           LinkInNotes(
             color: (appStateSettings["materialYou"]
                 ? Theme.of(context).colorScheme.secondaryContainer
                 : getColor(context, "canvasContainer")),
             link: "add-attachment".tr(),
+            displayText: "add-attachment".tr(),
             iconData: appStateSettings["outlinedIcons"]
                 ? Icons.attachment_outlined
                 : Icons.attachment_rounded,
@@ -4717,6 +5527,373 @@ void setSelectedPeriodLength({
   return;
 }
 
+class ReceiptSplitItemsEditorPopup extends StatefulWidget {
+  const ReceiptSplitItemsEditorPopup({
+    required this.initialItems,
+    required this.categories,
+    this.currencyCode,
+    super.key,
+  });
+
+  final List<EditableReceiptLineItem> initialItems;
+  final List<TransactionCategory> categories;
+  final String? currencyCode;
+
+  @override
+  State<ReceiptSplitItemsEditorPopup> createState() =>
+      _ReceiptSplitItemsEditorPopupState();
+}
+
+class _ReceiptSplitItemsEditorPopupState
+    extends State<ReceiptSplitItemsEditorPopup> {
+  late List<EditableReceiptLineItem> items =
+      widget.initialItems.map((item) => item.copyWith()).toList();
+
+  String _formatAmount(double amount) {
+    final String code = (widget.currencyCode ?? "").trim();
+    final String amountLabel = amount.toStringAsFixed(2);
+    return code.isEmpty ? amountLabel : "$code $amountLabel";
+  }
+
+  TransactionCategory? _findCategoryByPk(String? categoryPk) {
+    if (categoryPk == null) return null;
+    for (final TransactionCategory category in widget.categories) {
+      if (category.categoryPk == categoryPk) return category;
+    }
+    return null;
+  }
+
+  String _getCategoryDisplay(String? categoryPk) {
+    final TransactionCategory? category = _findCategoryByPk(categoryPk);
+    if (category == null) return "Uncategorized";
+    if (category.mainCategoryPk == null) return category.name;
+
+    final TransactionCategory? mainCategory =
+        _findCategoryByPk(category.mainCategoryPk);
+    if (mainCategory == null) return category.name;
+    return "${mainCategory.name} > ${category.name}";
+  }
+
+  Future<void> _editItem(int index) async {
+    final dynamic result = await openBottomSheet(
+      context,
+      popupWithKeyboard: true,
+      ReceiptLineItemEditorPopup(
+        item: items[index],
+        categories: widget.categories,
+        currencyCode: widget.currencyCode,
+      ),
+    );
+
+    if (result is EditableReceiptLineItem) {
+      setState(() {
+        items[index] = result;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final int includedCount =
+        items.where((item) => item.include && item.amount > 0).length;
+
+    return PopupFramework(
+      title: "Edit Split Items",
+      subtitle:
+          "Adjust each line item before creating split transactions. Tap an item to change its title, amount, or category.",
+      child: Column(
+        children: [
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.48,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  for (int index = 0; index < items.length; index++)
+                    Padding(
+                      padding: EdgeInsetsDirectional.only(
+                        bottom: index == items.length - 1 ? 0 : 8,
+                      ),
+                      child: SettingsContainer(
+                        enableBorderRadius: true,
+                        title: items[index].include
+                            ? items[index].name
+                            : "${items[index].name} (Excluded)",
+                        description: [
+                          _formatAmount(items[index].amount),
+                          _getCategoryDisplay(items[index].categoryPk),
+                          if (items[index].notes?.trim().isNotEmpty == true)
+                            items[index].notes!.trim(),
+                        ].join(' | '),
+                        icon: items[index].include
+                            ? (appStateSettings["outlinedIcons"]
+                                ? Icons.receipt_outlined
+                                : Icons.receipt_rounded)
+                            : (appStateSettings["outlinedIcons"]
+                                ? Icons.remove_circle_outline
+                                : Icons.remove_circle_rounded),
+                        onTap: () {
+                          _editItem(index);
+                        },
+                        afterWidget: Padding(
+                          padding: const EdgeInsetsDirectional.only(start: 8),
+                          child: PlatformSwitch(
+                            value: items[index].include,
+                            onTap: () {
+                              setState(() {
+                                items[index] = items[index].copyWith(
+                                  include: !items[index].include,
+                                );
+                              });
+                            },
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          SizedBox(height: 15),
+          Button(
+            label: includedCount <= 0
+                ? "Create Split Transactions"
+                : "Create $includedCount Split ${includedCount == 1 ? 'Transaction' : 'Transactions'}",
+            onTap: () {
+              if (includedCount <= 0) {
+                openSnackbar(
+                  SnackbarMessage(
+                    title: "No Included Items",
+                    description:
+                        "Enable at least one line item before creating split transactions.",
+                    icon: appStateSettings["outlinedIcons"]
+                        ? Icons.info_outline
+                        : Icons.info_rounded,
+                  ),
+                );
+                return;
+              }
+              popRoute(context, items);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class ReceiptLineItemEditorPopup extends StatefulWidget {
+  const ReceiptLineItemEditorPopup({
+    required this.item,
+    required this.categories,
+    this.currencyCode,
+    super.key,
+  });
+
+  final EditableReceiptLineItem item;
+  final List<TransactionCategory> categories;
+  final String? currencyCode;
+
+  @override
+  State<ReceiptLineItemEditorPopup> createState() =>
+      _ReceiptLineItemEditorPopupState();
+}
+
+class _ReceiptLineItemEditorPopupState
+    extends State<ReceiptLineItemEditorPopup> {
+  late TextEditingController nameController;
+  late TextEditingController amountController;
+  late bool include;
+  TransactionCategory? selectedCategory;
+  TransactionCategory? selectedSubCategory;
+
+  @override
+  void initState() {
+    super.initState();
+    nameController = TextEditingController(text: widget.item.name);
+    amountController = TextEditingController(
+      text: widget.item.amount.toStringAsFixed(2),
+    );
+    include = widget.item.include;
+
+    final TransactionCategory? currentCategory =
+        _findCategoryByPk(widget.item.categoryPk);
+    if (currentCategory?.mainCategoryPk != null) {
+      selectedSubCategory = currentCategory;
+      selectedCategory = _findCategoryByPk(currentCategory!.mainCategoryPk);
+    } else {
+      selectedCategory = currentCategory;
+    }
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    amountController.dispose();
+    super.dispose();
+  }
+
+  TransactionCategory? _findCategoryByPk(String? categoryPk) {
+    if (categoryPk == null) return null;
+    for (final TransactionCategory category in widget.categories) {
+      if (category.categoryPk == categoryPk) return category;
+    }
+    return null;
+  }
+
+  String _selectedCategoryLabel() {
+    final TransactionCategory? effectiveCategory =
+        selectedSubCategory ?? selectedCategory;
+    if (effectiveCategory == null) return "Uncategorized";
+    if (selectedSubCategory == null || selectedCategory == null) {
+      return effectiveCategory.name;
+    }
+    return "${selectedCategory!.name} > ${selectedSubCategory!.name}";
+  }
+
+  Future<void> _pickCategory() async {
+    final MainAndSubcategory result = await selectCategorySequence(
+      context,
+      selectedCategory: selectedCategory,
+      setSelectedCategory: (_) {},
+      selectedSubCategory: selectedSubCategory,
+      setSelectedSubCategory: (_) {},
+      selectedIncomeInitial: false,
+      allowReorder: false,
+      subtitle: "Choose a category override for this line item.",
+    );
+    if (result.main != null) {
+      setState(() {
+        selectedCategory = result.main;
+        selectedSubCategory = result.sub;
+      });
+    }
+  }
+
+  void _save() {
+    final String name = nameController.text.trim();
+    final double? amount =
+        double.tryParse(amountController.text.trim().replaceAll(',', '.'));
+    if (name.isEmpty) {
+      openSnackbar(
+        SnackbarMessage(
+          title: "Missing Item Name",
+          description: "Enter a name for this split item.",
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.info_outline
+              : Icons.info_rounded,
+        ),
+      );
+      return;
+    }
+    if (amount == null || amount <= 0) {
+      openSnackbar(
+        SnackbarMessage(
+          title: "Invalid Amount",
+          description: "Enter an amount greater than zero for this line item.",
+          icon: appStateSettings["outlinedIcons"]
+              ? Icons.info_outline
+              : Icons.info_rounded,
+        ),
+      );
+      return;
+    }
+
+    popRoute(
+      context,
+      widget.item.copyWith(
+        name: name,
+        amount: amount,
+        categoryPk: (selectedSubCategory ?? selectedCategory)?.categoryPk,
+        clearCategoryPk: selectedSubCategory == null && selectedCategory == null,
+        include: include,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupFramework(
+      title: "Edit Line Item",
+      child: Column(
+        children: [
+          TextInput(
+            controller: nameController,
+            labelText: "Item name",
+            autoFocus: true,
+            padding: EdgeInsetsDirectional.zero,
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.edit_outlined
+                : Icons.edit_rounded,
+          ),
+          SizedBox(height: 12),
+          TextInput(
+            controller: amountController,
+            labelText: "Amount",
+            padding: EdgeInsetsDirectional.zero,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.payments_outlined
+                : Icons.payments_rounded,
+          ),
+          SizedBox(height: 12),
+          SettingsContainer(
+            enableBorderRadius: true,
+            title: "Category",
+            description: _selectedCategoryLabel(),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.category_outlined
+                : Icons.category_rounded,
+            onTap: _pickCategory,
+          ),
+          if (selectedCategory != null || selectedSubCategory != null)
+            Padding(
+              padding: const EdgeInsetsDirectional.only(top: 10),
+              child: Button(
+                color: Theme.of(context).colorScheme.tertiaryContainer,
+                textColor: Theme.of(context).colorScheme.onTertiaryContainer,
+                label: "Clear Category Override",
+                onTap: () {
+                  setState(() {
+                    selectedCategory = null;
+                    selectedSubCategory = null;
+                  });
+                },
+              ),
+            ),
+          SizedBox(height: 12),
+          SettingsContainerSwitch(
+            enableBorderRadius: true,
+            title: "Include in split",
+            description:
+                "Turn this off to exclude the line item from the split save.",
+            initialValue: include,
+            syncWithInitialValue: false,
+            icon: include
+                ? (appStateSettings["outlinedIcons"]
+                    ? Icons.check_circle_outline
+                    : Icons.check_circle_rounded)
+                : (appStateSettings["outlinedIcons"]
+                    ? Icons.remove_circle_outline
+                    : Icons.remove_circle_rounded),
+            onSwitched: (value) {
+              setState(() {
+                include = value;
+              });
+            },
+          ),
+          SizedBox(height: 14),
+          Button(
+            label: "Save Changes",
+            onTap: _save,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class SelectSubcategoryChips extends StatelessWidget {
   const SelectSubcategoryChips(
       {required this.selectedCategoryPk,
@@ -4745,7 +5922,7 @@ class SelectSubcategoryChips extends StatelessWidget {
                         allowMultipleSelected: false,
                         selectedColor: Theme.of(context)
                             .colorScheme
-                            .background
+                          .surface
                             .withOpacity(0.6),
                         onLongPress: (category) {
                           pushRoute(

@@ -179,6 +179,14 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "sharedBudgets": true,
     "emailScanning": true,
     "emailScanningPullToRefresh": false,
+    "intelligenceProvider": "openai-compatible",
+    "intelligenceOpenAIBaseUrl": "https://api.openai.com/v1",
+    "intelligenceOpenAIApiKey": "",
+    "intelligenceOpenAIModel": "gpt-4.1-mini",
+    "intelligenceGeminiBaseUrl":
+      "https://generativelanguage.googleapis.com/v1beta",
+    "intelligenceGeminiApiKey": "",
+    "intelligenceGeminiModel": "models/gemini-2.0-flash",
     "incognitoKeyboard": false,
     // the key is the budgetPk (in String!)
     // Should be of type Map<String, List<String>>
