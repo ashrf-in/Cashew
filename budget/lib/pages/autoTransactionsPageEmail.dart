@@ -13,9 +13,12 @@ import 'package:budget/widgets/categoryIcon.dart';
 import 'package:budget/widgets/globalSnackbar.dart';
 import 'package:budget/widgets/navigationFramework.dart';
 import 'package:budget/widgets/openContainerNavigation.dart';
+import 'package:budget/widgets/openBottomSheet.dart';
 import 'package:budget/widgets/openPopup.dart';
 import 'package:budget/widgets/openSnackbar.dart';
 import 'package:budget/widgets/framework/pageFramework.dart';
+import 'package:budget/widgets/framework/popupFramework.dart';
+import 'package:budget/widgets/textInput.dart';
 import 'package:budget/widgets/settingsContainers.dart';
 import 'package:budget/widgets/statusBox.dart';
 import 'package:budget/widgets/tappable.dart';
@@ -56,10 +59,143 @@ Future<bool> requestReadNotificationPermission() async {
   return status;
 }
 
+// Known financial app package names sourced from FinArtReborn's static mapping
+const Set<String> _knownFinancialPackages = {
+  "com.truist.mobile",
+  "ae.ahb.digital",
+  "com.sbi.lotusintouch",
+  "com.sbi.SBIFreedomPlus",
+  "com.cbt.ajmandigital",
+  "com.phonepe.app",
+  "ph.seabank.seabank",
+  "pl.bzwbk.bzwbk24",
+  "com.revolut.revolut",
+  "com.revolut.business",
+  "com.yellowpepper.pichincha",
+  "io.wio.retail",
+  "io.wio.sme",
+  "de.santander.presentation",
+  "com.appdeuna.wallet",
+  "com.transferwise.android",
+  "com.navyfederal.android",
+  "com.dib.app",
+  "com.paypal.android.p2pmobile",
+  "money.jupiter",
+  "uk.co.santander.santanderUK",
+  "in.amazon.mShop.android.shopping",
+  "com.Version1",
+  "com.adcb.bank",
+  "io.telda.app",
+  "com.emiratesislamic.android",
+  "com.scb.ae.bmw",
+  "in.org.npci.upiapp",
+  "ae.hsbc.hsbcuae",
+  "com.snapwork.hdfc",
+  "com.globe.gcash.android",
+  "com.firstdirect.bankingonthego",
+  "com.cbd.mobile",
+  "com.db.businessline.cardapp",
+  "com.db.pwcc.dbmobile",
+  "com.nexta.nexta",
+  "com.squareup.cash",
+  "com.fineco.it",
+  "com.barclays.android.barclaysmobilebanking",
+  "com.csam.icici.bank.imobile",
+  "com.nationstrust.frimi",
+  "com.dreamplug.androidapp",
+  "net.one97.paytm",
+  "com.cbq.CBMobile",
+  "com.iexceed.unoConsumerBanking",
+  "com.bpi.ng.app",
+  "com.google.android.apps.walletnfcrel",
+  "com.citibank.mobile.citiuaePAT",
+  "com.c6bank.app",
+  "ar.com.santander.rio.mbanking",
+  "com.sadapay.app",
+  "com.askari",
+  "za.co.fnb.connect.itt",
+  "com.emiratesnbd.android",
+  "com.hbl.android.hblmobilebanking",
+  "com.sovereign.santander",
+  "com.rak",
+  "com.chase.sig.android",
+  "com.ge.capital.konysbiapp",
+  "uk.co.hsbc.hsbcukmobilebanking",
+  "com.kiya.mahaplus",
+  "br.com.neon",
+  "com.google.android.apps.nbu.paisa.user",
+  "com.samsung.android.spay",
+  "com.varomoney.bank",
+  "com.axis.mobile",
+  "com.adib.mobile",
+  "pk.com.telenor.phoenix",
+  "in.irisbyyes.app",
+  "com.infonow.bofa",
+  "com.msf.kbank.mobile",
+  "com.sofi.mobile",
+  "mx.bancosantander.supermovil",
+  "com.fab.personalbanking",
+  "indwin.c3.shareapp",
+  "com.sib.retail",
+  "com.adcbmobile.pfm",
+  "com.uab.personal",
+  "com.bankfab.pbg.ae.dubaifirst",
+  "com.simpl.android",
+  "com.vipera.ts.starter.MashreqAE",
+  "eu.eleader.mobilebanking.nbk",
+  "com.rbs.mobile.android.natwest",
+  "com.epifi.paisa",
+  "com.wf.wellsfargomobile",
+  "es.bancosantander.apps",
+  "com.samsung.android.samsungpay.gear",
+  "com.google.android.gm",
+  "com.samsung.android.email.provider",
+  "com.yahoo.mobile.client.android.mail",
+  "com.yahoo.mobile.client.android.mail.lite",
+};
+
+
+List<String> getCustomNotificationPackages() {
+  final raw = appStateSettings["notificationCustomPackages"];
+  if (raw is List) return List<String>.from(raw);
+  return [];
+}
+
+Future<void> addCustomNotificationPackage(String packageName) async {
+  final packages = getCustomNotificationPackages();
+  if (!packages.contains(packageName)) {
+    packages.add(packageName);
+    await updateSettings("notificationCustomPackages", packages,
+        updateGlobalState: false);
+  }
+}
+
+Future<void> removeCustomNotificationPackage(String packageName) async {
+  final packages = getCustomNotificationPackages();
+  packages.remove(packageName);
+  await updateSettings("notificationCustomPackages", packages,
+      updateGlobalState: false);
+}
+
+bool _isFinancialNotification(String packageName, String payload) {
+  if (payload.trim().isEmpty) return false;
+
+  // Only allow explicitly allowlisted apps — user-defined custom packages or built-in list.
+  // No keyword/regex fallbacks: anything not on the list is ignored.
+  return getCustomNotificationPackages().contains(packageName) ||
+      _knownFinancialPackages.contains(packageName);
+}
+
 onNotification(ServiceNotificationEvent event) async {
-  String messageString = getNotificationMessage(event);
+  final packageName = event.packageName ?? '';
+  final String messageString = getNotificationMessage(event);
+
+  // Only process notifications from banking/payment/wallet apps
+  if (!_isFinancialNotification(packageName, messageString)) return;
+
   recentCapturedNotifications.insert(0, messageString);
-  recentCapturedNotifications.take(50);
+  if (recentCapturedNotifications.length > 50)
+    recentCapturedNotifications = recentCapturedNotifications.sublist(0, 50);
   queueTransactionFromMessage(messageString);
 }
 
@@ -286,8 +422,147 @@ class _AutoTransactionsPageNotificationsState
             );
           },
         ),
+        NotificationPackagesSection(
+          onChanged: () => setState(() {}),
+        ),
         EmailsList(
           messagesList: recentCapturedNotifications,
+        ),
+      ],
+    );
+  }
+}
+
+class NotificationPackagesSection extends StatelessWidget {
+  const NotificationPackagesSection({required this.onChanged, super.key});
+  final VoidCallback onChanged;
+
+  void _showAddDialog(BuildContext context) {
+    String input = '';
+    openBottomSheet(
+      context,
+      PopupFramework(
+        title: "Add App Package",
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsetsDirectional.only(bottom: 5),
+              child: TextFont(
+                text:
+                    "Enter the full package name of the app (e.g. com.mybank.app). You can find it in the captured notifications list below.",
+                fontSize: 13,
+                maxLines: 5,
+                textColor: Colors.grey,
+              ),
+            ),
+            TextInput(
+              autoFocus: true,
+              labelText: "com.example.bankapp",
+              bubbly: false,
+              onChanged: (value) => input = value.trim(),
+              padding: const EdgeInsetsDirectional.symmetric(horizontal: 0),
+            ),
+            const SizedBox(height: 10),
+            Button(
+              label: "Add",
+              onTap: () async {
+                if (input.isNotEmpty) {
+                  await addCustomNotificationPackage(input);
+                  popRoute(context);
+                  onChanged();
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final packages = getCustomNotificationPackages();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding:
+              const EdgeInsetsDirectional.only(start: 20, end: 20, top: 16, bottom: 4),
+          child: TextFont(
+            text: "Allowed App Packages",
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(start: 20, end: 20, bottom: 8),
+          child: TextFont(
+            text:
+                "Notifications from these apps will always be processed, in addition to the built-in banking app list.",
+            fontSize: 13,
+            maxLines: 5,
+            textColor: Colors.grey,
+          ),
+        ),
+        if (packages.isEmpty)
+          Padding(
+            padding: const EdgeInsetsDirectional.only(start: 20, end: 20, bottom: 8),
+            child: TextFont(
+              text: "No custom packages added.",
+              fontSize: 13,
+              textColor: Colors.grey,
+            ),
+          ),
+        for (final pkg in packages)
+          Padding(
+            padding: const EdgeInsetsDirectional.symmetric(
+                horizontal: 15, vertical: 2),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: getColor(context, "lightDarkAccent"),
+              ),
+              child: Padding(
+                padding: const EdgeInsetsDirectional.only(
+                    start: 15, end: 4, top: 4, bottom: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextFont(
+                        text: pkg,
+                        fontSize: 14,
+                        maxLines: 2,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        appStateSettings["outlinedIcons"]
+                            ? Icons.delete_outlined
+                            : Icons.delete_rounded,
+                        color: Colors.red,
+                        size: 20,
+                      ),
+                      onPressed: () async {
+                        await removeCustomNotificationPackage(pkg);
+                        onChanged();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(
+              start: 15, end: 15, top: 6, bottom: 8),
+          child: Button(
+            label: "Add Package",
+            onTap: () => _showAddDialog(context),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.add_circle_outline
+                : Icons.add_circle_rounded,
+          ),
         ),
       ],
     );
