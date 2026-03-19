@@ -34,11 +34,11 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "widgetOpacity": 1,
     "widgetTheme": "system", //system, light, dark
     "nonCompactTransactions":
-        false, //still in testing, declares a new transaction layout to show more information in lists
+        true, //still in testing, declares a new transaction layout to show more information in lists
     "fadeTransactionNameOverflows":
-        false, //still in testing, overflow transaction titles use fade instead of "..."
+        true, //still in testing, overflow transaction titles use fade instead of "..."
     "circularProgressRotation":
-        false, // still in testing, offsets the circular progress to align with pie chart sections
+        true, // still in testing, offsets the circular progress to align with pie chart sections
     "forceFullDarkBackground": false,
     // FullScreen is added if the section has its own preference when full screen (double column)
     "futureTransactionDaysHomePage": 4,
@@ -125,7 +125,7 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "restrictAmountOfInitiallyLoadedTransactions": false,
     "autoAddAssociatedTitles": true,
     "AutoTransactions-canReadEmails": false,
-    "notificationScanningDebug": false,
+    "notificationScanningDebug": true,
     "notificationScanning": false,
     "accountColorfulAmountsWithArrows": false,
     "netTotalsColorful": false,
@@ -175,8 +175,8 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "forceSmallHeader": false,
     "animationSpeed": 1.0,
     "logging": false,
-    "sharedBudgets": false,
-    "emailScanning": false,
+    "sharedBudgets": true,
+    "emailScanning": true,
     "emailScanningPullToRefresh": false,
     "incognitoKeyboard": false,
     // the key is the budgetPk (in String!)

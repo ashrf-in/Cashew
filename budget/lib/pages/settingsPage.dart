@@ -569,18 +569,15 @@ class SettingsPageContent extends StatelessWidget {
         //   icon: appStateSettings["outlinedIcons"] ? Icons.auto_fix_high_outlined : Icons.auto_fix_high_rounded,
         // ),
 
-        appStateSettings["emailScanning"]
-            ? SettingsContainerOpenPage(
-                openPage: AutoTransactionsPageEmail(),
-                title: "auto-email-transactions".tr(),
-                icon: appStateSettings["outlinedIcons"]
-                    ? Icons.mark_email_unread_outlined
-                    : Icons.mark_email_unread_rounded,
-              )
-            : SizedBox.shrink(),
+        SettingsContainerOpenPage(
+            openPage: AutoTransactionsPageEmail(),
+            title: "auto-email-transactions".tr(),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.mark_email_unread_outlined
+                : Icons.mark_email_unread_rounded,
+          ),
 
-        appStateSettings["notificationScanningDebug"] &&
-                getPlatform(ignoreEmulation: true) == PlatformOS.isAndroid
+        getPlatform(ignoreEmulation: true) == PlatformOS.isAndroid
             ? SettingsContainerOpenPage(
                 title: "Notification Transactions",
                 openPage: AutoTransactionsPageNotifications(),
