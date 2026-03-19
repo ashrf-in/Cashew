@@ -149,6 +149,7 @@ class AddTransactionPage extends StatefulWidget {
     this.selectedWallet,
     this.selectedDate,
     this.selectedNotes,
+    this.onTransactionSaved,
     this.startInitialAddTransactionSequence = true,
     this.transferBalancePopup = false,
     required this.routesToPopAfterDelete,
@@ -169,6 +170,7 @@ class AddTransactionPage extends StatefulWidget {
   final TransactionWallet? selectedWallet;
   final DateTime? selectedDate;
   final String? selectedNotes;
+  final Future<void> Function(Transaction transaction)? onTransactionSaved;
   final bool startInitialAddTransactionSequence;
   final bool transferBalancePopup;
 
@@ -1242,12 +1244,10 @@ class _AddTransactionPageState extends State<AddTransactionPage>
       if (selectedTitle != null &&
           selectedCategory != null &&
           selectedTitle != "") {
-        // if (selectedSubCategory != null) {
-        //   await addAssociatedTitles(selectedTitle!, selectedSubCategory!);
-        // } else {
-        //   await addAssociatedTitles(selectedTitle!, selectedCategory!);
-        // }
-        await addAssociatedTitles(selectedTitle!, selectedCategory!);
+        await addAssociatedTitles(
+          selectedTitle!,
+          selectedSubCategory ?? selectedCategory!,
+        );
       }
 
       Transaction createdTransaction = await createTransaction();
@@ -1344,6 +1344,14 @@ class _AddTransactionPageState extends State<AddTransactionPage>
             await database.getTransactionFromRowId(rowId);
         print("Transaction just added:");
         print(transactionJustAdded);
+
+        if (widget.onTransactionSaved != null) {
+          try {
+            await widget.onTransactionSaved!(transactionJustAdded);
+          } catch (e) {
+            print("Error in onTransactionSaved: " + e.toString());
+          }
+        }
 
         // Do the flash animation only if the date was changed
         if (transactionJustAdded.dateCreated !=

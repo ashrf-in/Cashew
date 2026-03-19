@@ -6,6 +6,7 @@ import 'package:budget/pages/addEmailTemplate.dart';
 import 'package:budget/pages/addTransactionPage.dart';
 import 'package:budget/pages/editCategoriesPage.dart';
 import 'package:budget/struct/databaseGlobal.dart';
+import 'package:budget/struct/notificationLearning.dart';
 import 'package:budget/struct/settings.dart';
 import 'package:budget/widgets/accountAndBackup.dart';
 import 'package:budget/widgets/button.dart';
@@ -37,6 +38,16 @@ import 'addButton.dart';
 
 StreamSubscription<ServiceNotificationEvent>? notificationListenerSubscription;
 List<String> recentCapturedNotifications = [];
+
+class _ResolvedNotificationCategorySelection {
+  const _ResolvedNotificationCategorySelection({
+    this.mainCategory,
+    this.subCategory,
+  });
+
+  final TransactionCategory? mainCategory;
+  final TransactionCategory? subCategory;
+}
 
 Future<bool> initNotificationScanning({bool requestPermission = false}) async {
   if (getPlatform(ignoreEmulation: true) != PlatformOS.isAndroid) return false;
@@ -238,16 +249,17 @@ class _InitializeNotificationServiceState
 
 Future<bool> queueTransactionFromMessage(String messageString,
     {bool willPushRoute = true, DateTime? dateTime}) async {
-  String? title;
+  String? extractedTitle;
   double? amountDouble;
   List<ScannerTemplate> scannerTemplates =
       await database.getAllScannerTemplates();
   ScannerTemplate? templateFound;
+  final String? packageName = extractNotificationPackageName(messageString);
 
   for (ScannerTemplate scannerTemplate in scannerTemplates) {
     if (messageString.contains(scannerTemplate.contains)) {
       templateFound = scannerTemplate;
-      title = getTransactionTitleFromEmail(
+      extractedTitle = getTransactionTitleFromEmail(
           messageString,
           scannerTemplate.titleTransactionBefore,
           scannerTemplate.titleTransactionAfter);
@@ -264,19 +276,45 @@ Future<bool> queueTransactionFromMessage(String messageString,
   //if (amountDouble == null) amountDouble = getAmountFromString(title ?? "");
   // We don't need this line, we can still queue up a transaction without these details,
   // however maybe the user doesn't want to queue it up if its missing details?
-  if (amountDouble == null || title == null) return false;
+  if (amountDouble == null || extractedTitle == null) return false;
+  final String rawTitle = extractedTitle;
 
-  TransactionCategory? category;
-  TransactionAssociatedTitleWithCategory? foundTitle =
-      (await database.getSimilarAssociatedTitles(title: title, limit: 1))
-          .firstOrNull;
-  category = foundTitle?.category;
-  if (category == null) {
-    category = await database
-        .getCategoryInstanceOrNull(templateFound.defaultCategoryFk);
+  final NotificationLearningSuggestion learnedSuggestion =
+      getNotificationLearningSuggestion(
+    packageName: packageName,
+    rawTitle: rawTitle,
+  );
+
+  final String title = learnedSuggestion.canonicalTitle?.trim().isNotEmpty == true
+      ? learnedSuggestion.canonicalTitle!.trim()
+      : rawTitle;
+
+  final _ResolvedNotificationCategorySelection learnedCategorySelection =
+      await _resolveNotificationCategorySelectionFromPks(
+    categoryPk: learnedSuggestion.categoryPk,
+    subCategoryPk: learnedSuggestion.subCategoryPk,
+  );
+
+  _ResolvedNotificationCategorySelection associatedTitleSelection =
+      await _findAssociatedNotificationCategorySelection(title);
+  if (associatedTitleSelection.mainCategory == null && title != rawTitle) {
+    associatedTitleSelection =
+        await _findAssociatedNotificationCategorySelection(rawTitle);
   }
 
-  TransactionWallet? wallet = templateFound.walletFk == "-1"
+  final TransactionCategory? category = learnedCategorySelection.mainCategory ??
+      associatedTitleSelection.mainCategory ??
+      await database.getCategoryInstanceOrNull(templateFound.defaultCategoryFk);
+  final TransactionCategory? subCategory = learnedCategorySelection.subCategory ??
+      associatedTitleSelection.subCategory;
+
+  TransactionWallet? wallet;
+  final String? learnedWalletPk =
+      learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
+  if (learnedWalletPk?.trim().isNotEmpty == true) {
+    wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
+  }
+  wallet ??= templateFound.walletFk == "-1"
       ? null
       : await database.getWalletInstanceOrNull(templateFound.walletFk);
 
@@ -289,9 +327,20 @@ Future<bool> queueTransactionFromMessage(String messageString,
         selectedAmount: amountDouble,
         selectedTitle: title,
         selectedCategory: category,
+        selectedSubCategory: subCategory,
         startInitialAddTransactionSequence: false,
         selectedWallet: wallet,
         selectedDate: dateTime,
+        onTransactionSaved: (transaction) async {
+          await learnAcceptedNotificationDraft(
+            packageName: packageName,
+            rawTitle: rawTitle,
+            finalTitle: transaction.name,
+            categoryPk: transaction.categoryFk,
+            subCategoryPk: transaction.subCategoryFk,
+            walletPk: transaction.walletFk,
+          );
+        },
       ),
     );
   } else {
@@ -301,6 +350,7 @@ Future<bool> queueTransactionFromMessage(String messageString,
     await processAddTransactionFromParams(currentContext, {
       "title": title,
       "categoryPk": category?.categoryPk,
+      "subcategoryPk": subCategory?.categoryPk,
       "walletPk": wallet?.walletPk,
       "amount": amountDouble.toString(),
       "date": dateTime.toString(),
@@ -308,6 +358,55 @@ Future<bool> queueTransactionFromMessage(String messageString,
   }
 
   return true;
+}
+
+Future<_ResolvedNotificationCategorySelection>
+    _findAssociatedNotificationCategorySelection(String title) async {
+  final TransactionAssociatedTitleWithCategory? foundTitle =
+      (await database.getSimilarAssociatedTitles(title: title, limit: 1))
+          .firstOrNull;
+  return _resolveNotificationCategorySelection(foundTitle?.category);
+}
+
+Future<_ResolvedNotificationCategorySelection>
+    _resolveNotificationCategorySelection(TransactionCategory? category) async {
+  if (category == null) {
+    return const _ResolvedNotificationCategorySelection();
+  }
+  if (category.mainCategoryPk == null) {
+    return _ResolvedNotificationCategorySelection(mainCategory: category);
+  }
+
+  final TransactionCategory? mainCategory =
+      await database.getCategoryInstanceOrNull(category.mainCategoryPk!);
+  if (mainCategory == null) {
+    return const _ResolvedNotificationCategorySelection();
+  }
+
+  return _ResolvedNotificationCategorySelection(
+    mainCategory: mainCategory,
+    subCategory: category,
+  );
+}
+
+Future<_ResolvedNotificationCategorySelection>
+    _resolveNotificationCategorySelectionFromPks({
+  required String? categoryPk,
+  required String? subCategoryPk,
+}) async {
+  if (subCategoryPk?.trim().isNotEmpty == true) {
+    final TransactionCategory? subCategory =
+        await database.getCategoryInstanceOrNull(subCategoryPk!);
+    return _resolveNotificationCategorySelection(subCategory);
+  }
+
+  if (categoryPk?.trim().isNotEmpty == true) {
+    final TransactionCategory? category =
+        await database.getCategoryInstanceOrNull(categoryPk!);
+    return _resolveNotificationCategorySelection(category);
+  }
+
+  return const _ResolvedNotificationCategorySelection();
 }
 
 String getNotificationMessage(ServiceNotificationEvent event) {

@@ -229,7 +229,10 @@ Future<Transaction?> processAddTransactionFromParams(
     insert: true,
   );
   if (title != "" && mainAndSubCategory.main != null) {
-    await addAssociatedTitles(title, mainAndSubCategory.main!);
+    await addAssociatedTitles(
+      title,
+      mainAndSubCategory.sub ?? mainAndSubCategory.main!,
+    );
   }
 
   if (rowId != null) {

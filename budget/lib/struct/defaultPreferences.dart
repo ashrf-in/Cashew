@@ -178,6 +178,11 @@ Future<Map<String, dynamic>> getDefaultPreferences() async {
     "logging": false,
     "sharedBudgets": true,
     "emailScanning": true,
+    "notificationTransactionLearning": {
+      "version": 1,
+      "phraseRules": [],
+      "packageWallets": [],
+    },
     "emailScanningPullToRefresh": false,
     "intelligenceProvider": "openai-compatible",
     "intelligenceOpenAIBaseUrl": "https://api.openai.com/v1",
