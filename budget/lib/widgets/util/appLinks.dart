@@ -25,6 +25,8 @@ import 'package:budget/widgets/tableEntry.dart';
 import 'package:provider/provider.dart';
 
 Throttler appLinksThrottler = Throttler(duration: Duration(milliseconds: 350));
+const int maxAppLinkContextRetries = 10;
+const Duration appLinkContextRetryDelay = Duration(milliseconds: 150);
 
 class InitializeAppLinks extends StatelessWidget {
   const InitializeAppLinks({required this.child, super.key});
@@ -258,7 +260,9 @@ Future processMessageToParse(
     BuildContext context, Map<String, String?> params) async {
   String messageString = params["messageToParse"].toString();
   recentCapturedNotifications.insert(0, messageString);
-  recentCapturedNotifications.take(50);
+  if (recentCapturedNotifications.length > 50) {
+    recentCapturedNotifications = recentCapturedNotifications.sublist(0, 50);
+  }
   dynamic result = await queueTransactionFromMessage(
     messageString,
     willPushRoute: true,
@@ -275,8 +279,20 @@ Future processMessageToParse(
 }
 
 Future executeAppLink(BuildContext? context, Uri uri,
-    {Function(dynamic)? onDebug}) async {
+    {Function(dynamic)? onDebug, int contextRetryCount = 0}) async {
   if (appStateSettings["hasOnboarded"] != true) return;
+  if (context == null) {
+    if (contextRetryCount >= maxAppLinkContextRetries) return;
+    Future.delayed(appLinkContextRetryDelay, () {
+      executeAppLink(
+        navigatorKey.currentContext,
+        uri,
+        onDebug: onDebug,
+        contextRetryCount: contextRetryCount + 1,
+      );
+    });
+    return;
+  }
   if (!appLinksThrottler.canProceed()) return;
 
   String endPoint = getApiEndpoint(uri);
@@ -285,66 +301,62 @@ Future executeAppLink(BuildContext? context, Uri uri,
   // Note these URIs must be unique from the launch from widget URIs!
   switch (endPoint) {
     case "addTransaction":
-      if (context != null) {
-        if (params["messageToParse"] != null) {
-          processMessageToParse(context, params);
-        } else if (params["JSON"] != null) {
-          try {
-            Map<String, dynamic> jsonData = json.decode(params["JSON"] ?? "");
-            for (dynamic transactionObject in jsonData["transactions"]) {
-              Map<String, String> currentObject = {};
-              transactionObject.forEach((key, value) {
-                currentObject[key] = value.toString();
-              });
-              dynamic res =
-                  await processAddTransactionFromParams(context, currentObject);
-              if (onDebug != null) onDebug(res);
-            }
-          } catch (e) {
-            openSnackbar(SnackbarMessage(
-              title: "error-parsing-json".tr(),
-              description: e.toString(),
-              icon: appStateSettings["outlinedIcons"]
-                  ? Icons.warning_outlined
-                  : Icons.warning_rounded,
-            ));
+      if (params["messageToParse"] != null) {
+        await processMessageToParse(context, params);
+      } else if (params["JSON"] != null) {
+        try {
+          Map<String, dynamic> jsonData = json.decode(params["JSON"] ?? "");
+          for (dynamic transactionObject in jsonData["transactions"]) {
+            Map<String, String> currentObject = {};
+            transactionObject.forEach((key, value) {
+              currentObject[key] = value.toString();
+            });
+            dynamic res =
+                await processAddTransactionFromParams(context, currentObject);
+            if (onDebug != null) onDebug(res);
           }
-        } else {
-          dynamic res = await processAddTransactionFromParams(context, params);
-          if (onDebug != null) onDebug(res);
+        } catch (e) {
+          openSnackbar(SnackbarMessage(
+            title: "error-parsing-json".tr(),
+            description: e.toString(),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.warning_outlined
+                : Icons.warning_rounded,
+          ));
         }
+      } else {
+        dynamic res = await processAddTransactionFromParams(context, params);
+        if (onDebug != null) onDebug(res);
       }
       break;
     case "addTransactionRoute":
-      if (context != null) {
-        if (params["messageToParse"] != null) {
-          processMessageToParse(context, params);
-        } else if (params["JSON"] != null) {
-          try {
-            Map<String, dynamic> jsonData = json.decode(params["JSON"] ?? "");
-            for (dynamic transactionObject in jsonData["transactions"]) {
-              Map<String, String> currentObject = {};
-              transactionObject.forEach((key, value) {
-                currentObject[key] = value.toString();
-              });
-              dynamic res = await processAddTransactionRouteFromParams(
-                  context, currentObject);
-              if (onDebug != null) onDebug(res);
-            }
-          } catch (e) {
-            openSnackbar(SnackbarMessage(
-              title: "error-parsing-json".tr(),
-              description: e.toString(),
-              icon: appStateSettings["outlinedIcons"]
-                  ? Icons.warning_outlined
-                  : Icons.warning_rounded,
-            ));
+      if (params["messageToParse"] != null) {
+        await processMessageToParse(context, params);
+      } else if (params["JSON"] != null) {
+        try {
+          Map<String, dynamic> jsonData = json.decode(params["JSON"] ?? "");
+          for (dynamic transactionObject in jsonData["transactions"]) {
+            Map<String, String> currentObject = {};
+            transactionObject.forEach((key, value) {
+              currentObject[key] = value.toString();
+            });
+            dynamic res = await processAddTransactionRouteFromParams(
+                context, currentObject);
+            if (onDebug != null) onDebug(res);
           }
-        } else {
-          dynamic res =
-              await processAddTransactionRouteFromParams(context, params);
-          if (onDebug != null) onDebug(res);
+        } catch (e) {
+          openSnackbar(SnackbarMessage(
+            title: "error-parsing-json".tr(),
+            description: e.toString(),
+            icon: appStateSettings["outlinedIcons"]
+                ? Icons.warning_outlined
+                : Icons.warning_rounded,
+          ));
         }
+      } else {
+        dynamic res =
+            await processAddTransactionRouteFromParams(context, params);
+        if (onDebug != null) onDebug(res);
       }
       break;
 

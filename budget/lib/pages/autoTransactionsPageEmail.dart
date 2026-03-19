@@ -38,21 +38,28 @@ import 'addButton.dart';
 StreamSubscription<ServiceNotificationEvent>? notificationListenerSubscription;
 List<String> recentCapturedNotifications = [];
 
-Future initNotificationScanning() async {
-  if (getPlatform(ignoreEmulation: true) != PlatformOS.isAndroid) return;
-  notificationListenerSubscription?.cancel();
-  if (appStateSettings["notificationScanning"] != true) return;
+Future<bool> initNotificationScanning({bool requestPermission = false}) async {
+  if (getPlatform(ignoreEmulation: true) != PlatformOS.isAndroid) return false;
+  await notificationListenerSubscription?.cancel();
+  notificationListenerSubscription = null;
+  if (appStateSettings["notificationScanning"] != true) return false;
 
-  bool status = await requestReadNotificationPermission();
+  bool status = requestPermission
+      ? await requestReadNotificationPermission()
+      : await hasReadNotificationPermission();
+  if (status != true) return false;
 
-  if (status == true) {
-    notificationListenerSubscription =
-        NotificationListenerService.notificationsStream.listen(onNotification);
-  }
+  notificationListenerSubscription =
+      NotificationListenerService.notificationsStream.listen(onNotification);
+  return true;
+}
+
+Future<bool> hasReadNotificationPermission() async {
+  return await NotificationListenerService.isPermissionGranted();
 }
 
 Future<bool> requestReadNotificationPermission() async {
-  bool status = await NotificationListenerService.isPermissionGranted();
+  bool status = await hasReadNotificationPermission();
   if (status != true) {
     status = await NotificationListenerService.requestPermission();
   }
@@ -186,17 +193,22 @@ bool _isFinancialNotification(String packageName, String payload) {
       _knownFinancialPackages.contains(packageName);
 }
 
-onNotification(ServiceNotificationEvent event) async {
+Future<void> onNotification(ServiceNotificationEvent event) async {
+  if (event.hasRemoved != true) return;
+
   final packageName = event.packageName ?? '';
-  final String messageString = getNotificationMessage(event);
+  final String notificationText =
+      [event.title ?? '', event.content ?? ''].join('\n').trim();
 
   // Only process notifications from banking/payment/wallet apps
-  if (!_isFinancialNotification(packageName, messageString)) return;
+  if (!_isFinancialNotification(packageName, notificationText)) return;
+
+  final String messageString = getNotificationMessage(event);
 
   recentCapturedNotifications.insert(0, messageString);
   if (recentCapturedNotifications.length > 50)
     recentCapturedNotifications = recentCapturedNotifications.sublist(0, 50);
-  queueTransactionFromMessage(messageString);
+  await queueTransactionFromMessage(messageString);
 }
 
 class InitializeNotificationService extends StatefulWidget {
@@ -224,7 +236,7 @@ class _InitializeNotificationServiceState
   }
 }
 
-Future queueTransactionFromMessage(String messageString,
+Future<bool> queueTransactionFromMessage(String messageString,
     {bool willPushRoute = true, DateTime? dateTime}) async {
   String? title;
   double? amountDouble;
@@ -269,7 +281,7 @@ Future queueTransactionFromMessage(String messageString,
       : await database.getWalletInstanceOrNull(templateFound.walletFk);
 
   if (willPushRoute) {
-    pushRoute(
+    await pushRoute(
       null,
       AddTransactionPage(
         useCategorySelectedIncome: true,
@@ -283,7 +295,10 @@ Future queueTransactionFromMessage(String messageString,
       ),
     );
   } else {
-    processAddTransactionFromParams(navigatorKey.currentContext!, {
+    BuildContext? currentContext = navigatorKey.currentContext;
+    if (currentContext == null) return false;
+
+    await processAddTransactionFromParams(currentContext, {
       "title": title,
       "categoryPk": category?.categoryPk,
       "walletPk": wallet?.walletPk,
@@ -291,6 +306,8 @@ Future queueTransactionFromMessage(String messageString,
       "date": dateTime.toString(),
     });
   }
+
+  return true;
 }
 
 String getNotificationMessage(ServiceNotificationEvent event) {
@@ -302,6 +319,59 @@ String getNotificationMessage(ServiceNotificationEvent event) {
   output = output + "Notification Title: " + event.title.toString() + "\n\n";
   output = output + "Notification Content: " + event.content.toString();
   return output;
+}
+
+String? _extractTemplateSegment(
+  String messageString,
+  String before,
+  String after,
+) {
+  int startIndex = before.isEmpty ? 0 : messageString.indexOf(before);
+  if (startIndex == -1) return null;
+
+  startIndex += before.length;
+  int endIndex = after.isEmpty
+      ? messageString.length
+      : messageString.indexOf(after, startIndex);
+  if (endIndex == -1 || endIndex < startIndex) return null;
+
+  String extracted = messageString.substring(startIndex, endIndex).trim();
+  if (extracted.isEmpty) return null;
+  return extracted;
+}
+
+double? _parseNotificationAmount(String amountString) {
+  bool isNegative = RegExp(r'[-—−–‐⁃‑‒―]').hasMatch(amountString);
+  String normalized = amountString.replaceAll(RegExp(r'[^0-9,.]'), '');
+  if (normalized.isEmpty) return null;
+
+  int lastComma = normalized.lastIndexOf(',');
+  int lastDot = normalized.lastIndexOf('.');
+
+  if (lastComma != -1 && lastDot != -1) {
+    if (lastComma > lastDot) {
+      normalized = normalized.replaceAll('.', '').replaceAll(',', '.');
+    } else {
+      normalized = normalized.replaceAll(',', '');
+    }
+  } else if (lastComma != -1) {
+    List<String> parts = normalized.split(',');
+    normalized = parts.length == 2 && parts.last.length <= 2
+        ? '${parts.first}.${parts.last}'
+        : parts.join();
+  } else if (lastDot != -1) {
+    List<String> parts = normalized.split('.');
+    if (parts.length == 2) {
+      normalized = parts.last.length <= 2 ? normalized : parts.join();
+    } else {
+      normalized =
+          '${parts.sublist(0, parts.length - 1).join()}.${parts.last}';
+    }
+  }
+
+  double? amount = double.tryParse(normalized);
+  if (amount == null) return null;
+  return isNegative ? -amount.abs() : amount.abs();
 }
 
 class AutoTransactionsPageNotifications extends StatefulWidget {
@@ -352,15 +422,25 @@ class _AutoTransactionsPageNotificationsState
             await updateSettings("notificationScanning", value,
                 updateGlobalState: false);
             if (value == true) {
-              bool status = await requestReadNotificationPermission();
+              bool status =
+                  await initNotificationScanning(requestPermission: true);
               if (status == false) {
                 await updateSettings("notificationScanning", false,
                     updateGlobalState: false);
-              } else {
-                initNotificationScanning();
+                openSnackbar(
+                  SnackbarMessage(
+                    title: "Notification access required",
+                    description:
+                        "Enable Cashew in Android Settings > Special app access > Notification access.",
+                    icon: appStateSettings["outlinedIcons"]
+                        ? Icons.notifications_off_outlined
+                        : Icons.notifications_off_rounded,
+                  ),
+                );
               }
             } else {
-              notificationListenerSubscription?.cancel();
+              await notificationListenerSubscription?.cancel();
+              notificationListenerSubscription = null;
             }
           },
           title: "Notification Transactions",
@@ -886,30 +966,28 @@ Future<void> parseEmailsInBackground(context,
 
 String? getTransactionTitleFromEmail(String messageString,
     String titleTransactionBefore, String titleTransactionAfter) {
-  String? title;
-  try {
-    int startIndex = messageString.indexOf(titleTransactionBefore) +
-        titleTransactionBefore.length;
-    int endIndex = messageString.indexOf(titleTransactionAfter, startIndex);
-    title = messageString.substring(startIndex, endIndex);
-    title = title.replaceAll("\n", "");
-    title = title.toLowerCase();
-    title = title.capitalizeFirst;
-  } catch (e) {}
-  return title;
+  String? title = _extractTemplateSegment(
+    messageString,
+    titleTransactionBefore,
+    titleTransactionAfter,
+  );
+  if (title == null) return null;
+
+  title = title.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+  if (title.isEmpty) return null;
+  return title.capitalizeFirst;
 }
 
 double? getTransactionAmountFromEmail(String messageString,
     String amountTransactionBefore, String amountTransactionAfter) {
-  double? amountDouble;
-  try {
-    int startIndex = messageString.indexOf(amountTransactionBefore) +
-        amountTransactionBefore.length;
-    int endIndex = messageString.indexOf(amountTransactionAfter, startIndex);
-    String amountString = messageString.substring(startIndex, endIndex);
-    amountDouble = double.parse(amountString.replaceAll(RegExp('[^0-9.]'), ''));
-  } catch (e) {}
-  return amountDouble;
+  String? amountString = _extractTemplateSegment(
+    messageString,
+    amountTransactionBefore,
+    amountTransactionAfter,
+  );
+  if (amountString == null) return null;
+
+  return _parseNotificationAmount(amountString);
 }
 
 class GmailApiScreen extends StatefulWidget {
