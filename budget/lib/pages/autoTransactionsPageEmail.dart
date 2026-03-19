@@ -139,6 +139,8 @@ Future<bool> requestReadNotificationPermission() async {
 
 // Known financial app package names sourced from FinArtReborn's static mapping
 const Set<String> _knownFinancialPackages = {
+  // Internal Android test app that posts bank-style notifications for Cashew.
+  "com.cashew.notificationsimulator",
   "com.truist.mobile",
   "ae.ahb.digital",
   "com.sbi.lotusintouch",

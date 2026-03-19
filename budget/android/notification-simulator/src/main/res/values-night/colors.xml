@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="simulator_primary">#91D8BC</color>
+    <color name="simulator_on_primary">#003829</color>
+    <color name="simulator_primary_container">#00513C</color>
+    <color name="simulator_on_primary_container">#ADF5D7</color>
+    <color name="simulator_secondary">#9DD0BF</color>
+    <color name="simulator_on_secondary">#00382D</color>
+    <color name="simulator_secondary_container">#1D4F41</color>
+    <color name="simulator_on_secondary_container">#B8ECDA</color>
+    <color name="simulator_tertiary">#AEC9E6</color>
+    <color name="simulator_on_tertiary">#17324A</color>
+    <color name="simulator_tertiary_container">#2E4962</color>
+    <color name="simulator_on_tertiary_container">#CEE5FF</color>
+    <color name="simulator_surface">#101412</color>
+    <color name="simulator_on_surface">#E1E3E0</color>
+    <color name="simulator_surface_variant">#404944</color>
+    <color name="simulator_on_surface_variant">#C0C9C3</color>
+    <color name="simulator_outline">#8A938D</color>
+    <color name="simulator_status_ok">#91D8BC</color>
+    <color name="simulator_error">#FFB4AB</color>
+</resources>

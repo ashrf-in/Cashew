@@ -3550,9 +3550,11 @@ class FinanceDatabase extends _$FinanceDatabase {
               transaction.copyWith(sharedStatus: Value(SharedStatus.waiting));
         }
       } else {
-        if (transaction.sharedStatus == null &&
-            originalTransaction != null &&
-            originalTransaction.sharedStatus == null) {
+        final bool isNewLocalInsert = insert && transaction.transactionPk == '-1';
+        if (isNewLocalInsert ||
+            (transaction.sharedStatus == null &&
+                originalTransaction != null &&
+                originalTransaction.sharedStatus == null)) {
         } else {
           try {
             print("REMOVING SHARED");

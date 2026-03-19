@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Notification Simulator</string>
+    <string name="header_title">Bank Notification Simulator</string>
+    <string name="header_subtitle">Post realistic bank-style notifications from a separate app so Cashew can exercise the full Android notification-listener flow.</string>
+    <string name="package_card_title">Sender package</string>
+    <string name="package_name_value">com.cashew.notificationsimulator</string>
+    <string name="package_hint">Cashew already allowlists this package for notification-capture testing.</string>
+    <string name="preset_label">Notification preset</string>
+    <string name="fill_preset">Fill Preset</string>
+    <string name="send_notification">Post Notification</string>
+    <string name="cancel_last">Cancel Last</string>
+    <string name="append_unique_reference">Append unique reference so repeat sends are not deduplicated by Cashew</string>
+    <string name="title_hint">Notification title</string>
+    <string name="body_hint">Notification body</string>
+    <string name="status_idle">Ready to post a simulator notification.</string>
+    <string name="status_posted">Posted notification #%1$d.</string>
+    <string name="status_cancelled">Cancelled notification #%1$d.</string>
+    <string name="status_cancel_missing">No simulator notification has been posted yet.</string>
+    <string name="status_permission_required">Notification permission is required on Android 13 and above.</string>
+    <string name="status_permission_denied">Notification permission was denied.</string>
+    <string name="status_notifications_disabled">Enable notifications for the simulator app in Android settings.</string>
+    <string name="error_missing_title">Enter a title.</string>
+    <string name="error_missing_body">Enter a notification body.</string>
+    <string name="channel_name">Bank Notification Simulation</string>
+    <string name="channel_description">Posts bank-style notifications for Cashew testing.</string>
+    <string name="preset_card_purchase">Card purchase</string>
+    <string name="preset_upi_debit">UPI debit</string>
+    <string name="preset_salary_credit">Salary credit</string>
+    <string name="preset_cash_withdrawal">ATM withdrawal</string>
+    <string name="preset_refund">Refund</string>
+    <string name="preset_fee">Monthly fee</string>
+</resources>

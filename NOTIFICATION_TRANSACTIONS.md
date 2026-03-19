@@ -26,6 +26,7 @@ Auto-categorize → Show AddTransactionPage (or silently create)
 | `lib/pages/addEmailTemplate.dart` | Template editor UI |
 | `lib/database/tables.dart:488` | `ScannerTemplates` DB table schema |
 | `android/app/src/main/AndroidManifest.xml:87` | `BIND_NOTIFICATION_LISTENER_SERVICE` declaration |
+| `android/notification-simulator/` | Separate Android app that posts bank-style test notifications |
 | `lib/struct/defaultPreferences.dart:128` | Feature flags |
 
 ## Flow
@@ -116,6 +117,27 @@ Defined in `lib/database/tables.dart:488`.
 ```
 
 The service is provided entirely by the `notification_listener_service: ^0.3.3` Flutter package — no custom Kotlin/Java code exists for this feature.
+
+## Notification Simulator
+
+The repo now includes a separate Android test app at `budget/android/notification-simulator/` with package `com.cashew.notificationsimulator`.
+
+- Cashew allowlists this package in `_knownFinancialPackages`, so no extra package setup is needed for local testing.
+- The simulator posts realistic bank-style notifications from a separate installed app, which exercises the actual Android notification-listener path instead of an in-app shortcut.
+- The simulator can optionally append a unique reference to each notification body so Cashew's duplicate suppression does not discard repeated test sends.
+
+Build and install it from `budget/android`:
+
+```bash
+./gradlew :notification-simulator:installDebug
+```
+
+Basic test flow:
+
+1. Install Cashew and enable notification scanning.
+2. Install the notification simulator app.
+3. Open the simulator, choose a preset, and post a notification.
+4. Verify Cashew captures or auto-creates the transaction according to the configured capture mode.
 
 ## Known Issues
 
