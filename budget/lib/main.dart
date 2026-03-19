@@ -29,7 +29,7 @@ import 'package:flutter/material.dart';
 import 'package:budget/colors.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:device_preview/device_preview.dart';
+// device_preview import removed — always disabled (enableDevicePreview = false)
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -62,12 +62,9 @@ void main() async {
         .compareTo((b.mostLikelyCategoryName ?? b.icon)));
     setHighRefreshRate();
     runApp(
-      DevicePreview(
-        enabled: enableDevicePreview,
-        builder: (context) => InitializeLocalizations(
-          child: RestartApp(
-            child: InitializeApp(key: appStateKey),
-          ),
+      InitializeLocalizations(
+        child: RestartApp(
+          child: InitializeApp(key: appStateKey),
         ),
       ),
     );
@@ -107,7 +104,7 @@ class App extends StatelessWidget {
       localizationsDelegates: context.localizationDelegates,
       supportedLocales: context.supportedLocales,
       locale:
-          enableDevicePreview ? DevicePreview.locale(context) : context.locale,
+          context.locale,
       shortcuts: shortcuts,
       actions: keyboardIntents,
       themeAnimationDuration: Duration(milliseconds: 400),
