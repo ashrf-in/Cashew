@@ -715,9 +715,7 @@ showHelpRestorePopup(BuildContext context) {
 }
 
 bool hidePremiumPopup() {
-  return premiumPopupEnabled == false ||
-      appStateSettings["purchaseID"] != null ||
-      appStateSettings["previewDemo"] == true;
+  return true;
 }
 
 Future<bool> premiumPopupPushRoute(BuildContext context) async {
@@ -1195,26 +1193,7 @@ class LockedFeature extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget child = IgnorePointer(child: this.child);
-    if (showLock)
-      child = Stack(
-        alignment: AlignmentDirectional.center,
-        children: [
-          IgnorePointer(child: this.child),
-          Icon(appStateSettings["outlinedIcons"]
-              ? Icons.lock_outlined
-              : Icons.lock_rounded),
-        ],
-      );
-    return Tappable(
-      onTap: () async {
-        bool result = await premiumPopupPushRoute(context);
-        if (actionAfter != null && result == true) actionAfter!();
-      },
-      borderRadius: 20,
-      color: Colors.transparent,
-      child: child,
-    );
+    return this.child;
   }
 }
 
