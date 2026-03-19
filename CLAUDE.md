@@ -132,53 +132,61 @@ Uses `provider` for state. The database (`AppDatabase`) is a central singleton a
 	- OpenAI-compatible APIs (`/v1/models`, chat completions-style vision requests)
 	- Gemini API (`v1beta/models`, `generateContent`)
 - UI for selecting provider, base URL, API key, and model is in `lib/pages/intelligenceSettingsPage.dart`
-- Current production AI feature is receipt capture in `lib/pages/addTransactionPage.dart`
+	
+- Current production AI features are:
+	- receipt capture in `lib/pages/addTransactionPage.dart`
 	- pick image from camera / gallery / file
 	- analyze receipt into merchant, date, amount, tax, wallet/category suggestion, and itemized line items
 	- allow per-line editing before split-save
 	- auto-attach the scanned receipt image via `lib/struct/uploadAttachment.dart`
+	- notification template analysis in `lib/struct/intelligence.dart`
+	- analyze notification text into reusable title/amount boundary segments, inferred direction, and suggested category/account values
+	- used only as a fallback when notification template matching misses and Intelligence is configured
 - If you extend AI features, keep provider/model handling inside `lib/struct/intelligence.dart` instead of scattering HTTP code across pages
 - Prefer deterministic local matching first where possible, then AI as an assistive or fallback layer when confidence is low
 
 ## Notification Auto Transactions
 
 - Android-only notification auto-transaction logic currently lives in `lib/pages/autoTransactionsPageEmail.dart`
+- Supporting helpers live in `lib/struct/notificationCapture.dart`, `lib/struct/notificationLearning.dart`, and `lib/struct/notificationsGlobal.dart`
 - `InitializeNotificationService` in `main.dart` starts notification scanning on app launch
 - Notification scanning is gated by:
 	- `notificationScanning`
 	- Android notification-listener permission
 	- app-package allowlisting (`_knownFinancialPackages` plus `notificationCustomPackages`)
+- Posted notifications are processed instantly; removed events are ignored
 - Captured notifications are normalized into a single message string containing package name, title, and content
 - Recent notifications are kept in-memory in `recentCapturedNotifications`, capped to 50 items
-- Parsing is currently deterministic, not AI-driven:
+- Duplicate suppression uses a normalized package/title/content fingerprint with a short in-memory time window
+- Parsing is hybrid:
 	- first matching `ScannerTemplate.contains` wins
-	- `_extractTemplateSegment(...)` extracts title / amount using before/after boundaries
-	- `_parseNotificationAmount(...)` handles comma/dot locale variants and negative signs
-- Category assignment flow:
-	- first try `AssociatedTitles`
-	- then fall back to the template's `defaultCategoryFk`
-- Route behavior:
-	- push `AddTransactionPage` for confirmation by default
-	- or silently call `processAddTransactionFromParams(...)`
-- Transactions created from notifications are still tagged `MethodAdded.email` because `MethodAdded` has no dedicated notification value yet
+	- when no template matches and Intelligence is configured, `analyzeNotificationMessage(...)` can generate a reusable scanner template automatically
+	- AI-generated boundaries are validated by reparsing the original notification before the template is saved
+- Category and wallet assignment flow:
+	- first try learned notification mappings from prior accepted drafts
+	- then `AssociatedTitles`
+	- then the template's default category and selected/default wallet fallbacks
+- Direction inference uses category polarity first, then notification keywords, then parsed amount sign
+- Capture modes:
+	- `smart` auto-creates only high-confidence complete drafts
+	- `review` always opens `AddTransactionPage`
+	- `instant` auto-creates any complete draft
+- Auto-created transactions are tagged `MethodAdded.notification`
+- Successful auto-created transactions trigger a local confirmation notification that deep-links to `openTransaction?transactionPk=...`
+- The repo includes `budget/android/notification-simulator/`, a separate Android test app allowlisted as `com.cashew.notificationsimulator`
 - `NOTIFICATION_TRANSACTIONS.md` documents this feature, but verify the code path before relying on the doc if behavior seems inconsistent
 
 ### AI Ideas For Notification Auto Transactions
 
-If improving notification auto-transactions with AI, keep the current template system as the primary path and layer AI around it for accuracy and reliability.
+Current implementation already has hybrid template parsing, AI-assisted template creation, basic duplicate suppression, confidence-based auto-create, and local learning from accepted drafts. If you extend it further, keep the existing deterministic template path as the primary route and build around it.
 
-- Hybrid parsing: keep current boundary/template extraction as the fast path, then call AI only when a template misses, extracted values are incomplete, or confidence is below threshold
-- Template generation: use AI on captured notifications to suggest new `ScannerTemplate` boundaries, package allowlist additions, and likely default categories, but require explicit user approval before saving
-- Merchant normalization: map noisy strings like card descriptors, reference codes, or `POS/UPI/ACH` text into canonical merchant names and feed those back into `AssociatedTitles`
-- Confidence-based UX: have AI return structured fields plus confidence and rationale; auto-create only above a high threshold, otherwise open `AddTransactionPage` prefilled with a review banner
-- Duplicate suppression: use package name, normalized merchant, amount, timestamp window, and AI classification to avoid double-creating a transaction when the same bank emits multiple notifications for one event
-- Transaction-type classification: infer debit vs credit vs refund vs transfer vs fee so the app can avoid treating every financial notification as a simple expense
-- Wallet inference: learn package-specific and phrase-specific wallet/account mappings so one bank app can map to the right Cashew wallet without relying only on the template default
-- User correction learning: when the user edits AI- or template-generated drafts, store the accepted merchant/category/title patterns locally and reuse them as retrieval context for future notifications
-- Source-specific prompting: keep separate few-shot examples or heuristics by package name because the text structure for one bank/payment app is usually stable within that package
-- Span extraction for auditability: require AI to return not just values, but the exact text spans it used for amount, merchant, and date so the UI can highlight why a draft was produced
-- Reliability guardrails: persist raw notification payload, parse status, confidence, and failure reason so notifications can be replayed after model bugs, template edits, or provider outages
-- Privacy/cost controls: keep AI optional for notifications, default to local/template parsing, and avoid sending every notification upstream unless the user explicitly enables AI parsing
+- Add a persisted review queue or replay screen for unmatched and low-confidence notifications
+- Require AI to return exact text spans for amount, merchant, and date so the UI can explain why a draft was produced
+- Expand duplicate suppression beyond simple normalized fingerprints to include time-window and semantic matching
+- Improve transaction-type classification beyond income vs expense to include transfer, fee, refund, and reversal handling
+- Use package-specific prompt examples because most financial-app notification formats are stable within the same app
+- Preserve raw notification payloads and parse outcomes for replay after model regressions, template edits, or provider outages
+- Keep AI optional for notifications and continue preferring local/template parsing when confidence is already high
 
 ## Android Build Environment
 
