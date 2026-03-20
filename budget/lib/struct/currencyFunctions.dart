@@ -111,8 +111,6 @@ String getCurrencySymbol(String? currencyKey) {
   if (currencyKey == null || currencyKey == "") return "";
 
   String normalizedCurrencyKey = currencyKey.toLowerCase();
-  if (normalizedCurrencyKey == "aed") return "AED";
-
   return (currenciesJSON[normalizedCurrencyKey]?["Symbol"] ??
       currenciesJSON[currencyKey]?["Symbol"] ??
       "")
