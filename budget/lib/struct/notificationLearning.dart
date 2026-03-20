@@ -29,12 +29,18 @@ class NotificationLearningSuggestion {
 }
 
 String? extractNotificationPackageName(String messageString) {
-  final RegExpMatch? match = RegExp(
-    r'^Package name:\s*(.+)$',
-    multiLine: true,
-    caseSensitive: false,
-  ).firstMatch(messageString);
-  return match?.group(1)?.trim();
+  for (final String line in messageString.split('\n')) {
+    final String trimmed = line.trimLeft();
+    if (!trimmed.toLowerCase().startsWith('package name:')) continue;
+    final int separatorIndex = trimmed.indexOf(':');
+    if (separatorIndex == -1) return null;
+    final String value = trimmed.substring(separatorIndex + 1).trim();
+    if (value.isEmpty || value.toLowerCase() == 'null') {
+      return null;
+    }
+    return value;
+  }
+  return null;
 }
 
 String normalizeNotificationLearningPhrase(String value) {

@@ -1,4 +1,5 @@
 import 'package:budget/struct/notificationCapture.dart';
+import 'package:budget/struct/notificationLearning.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -108,6 +109,15 @@ void main() {
         direction: NotificationTransactionDirection.income,
       ),
       42.5,
+    );
+  });
+
+  test('extractNotificationPackageName reads the captured package field', () {
+    expect(
+      extractNotificationPackageName(
+        'Package name: com.example.bank\nNotification removed: false\n\n----\n\nNotification Title: Paid\n\nNotification Content: Coffee shop',
+      ),
+      'com.example.bank',
     );
   });
 }

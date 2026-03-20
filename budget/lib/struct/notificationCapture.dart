@@ -31,12 +31,12 @@ String getNotificationCaptureModeLabel(String mode) {
 String getNotificationCaptureModeDescription(String mode) {
   switch (mode) {
     case notificationCaptureModeReview:
-      return "Always review captured notifications before saving them.";
+      return "Always review AI-parsed notifications before saving them.";
     case notificationCaptureModeInstant:
-      return "Add matched notifications instantly whenever Cashew already knows the category.";
+      return "Save complete AI-parsed notifications instantly.";
     case notificationCaptureModeSmart:
     default:
-      return "Add high-confidence notifications instantly and surface weaker matches for review.";
+      return "Save high-confidence AI-parsed notifications instantly and surface weaker matches for review.";
   }
 }
 

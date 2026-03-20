@@ -234,6 +234,60 @@ class NotificationTemplateAnalysis {
   }
 }
 
+class NotificationTransactionAnalysis {
+  const NotificationTransactionAnalysis({
+    required this.isTransaction,
+    this.title,
+    this.amount,
+    this.direction,
+    this.transactionDate,
+    this.suggestedCategoryName,
+    this.suggestedAccountName,
+    this.reasoning,
+    this.confidence,
+  });
+
+  final bool isTransaction;
+  final String? title;
+  final double? amount;
+  final NotificationTransactionDirection? direction;
+  final DateTime? transactionDate;
+  final String? suggestedCategoryName;
+  final String? suggestedAccountName;
+  final String? reasoning;
+  final int? confidence;
+
+  factory NotificationTransactionAnalysis.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    final String? rawDirection =
+        _stringFromJson(json["direction"])?.toLowerCase();
+    return NotificationTransactionAnalysis(
+      isTransaction:
+          json["isTransaction"] == true || json["shouldSave"] == true,
+      title: _stringFromJson(
+        json["title"] ?? json["transactionTitle"] ?? json["merchantName"],
+      ),
+      amount: _doubleFromJson(json["amount"] ?? json["totalAmount"]),
+      direction: rawDirection == "income"
+          ? NotificationTransactionDirection.income
+          : rawDirection == "expense"
+              ? NotificationTransactionDirection.expense
+              : null,
+      transactionDate:
+          _dateFromJson(json["transactionDate"] ?? json["date"]),
+      suggestedCategoryName: _stringFromJson(
+        json["suggestedCategoryName"] ?? json["suggestedCategory"],
+      ),
+      suggestedAccountName: _stringFromJson(
+        json["suggestedAccountName"] ?? json["suggestedWalletName"],
+      ),
+      reasoning: _stringFromJson(json["reasoning"]),
+      confidence: _intFromJson(json["confidence"]),
+    );
+  }
+}
+
 enum ReceiptCaptureSource {
   camera,
   gallery,
@@ -469,6 +523,50 @@ Future<NotificationTemplateAnalysis> analyzeNotificationMessage({
 
   final Map<String, dynamic> parsedJson = _extractJsonObject(responseText);
   return NotificationTemplateAnalysis.fromJson(parsedJson);
+}
+
+Future<NotificationTransactionAnalysis> analyzeNotificationTransaction({
+  required String notificationMessage,
+  required List<TransactionCategory> categories,
+  required List<TransactionWallet> wallets,
+  TransactionWallet? selectedWallet,
+  IntelligenceConfig? config,
+}) async {
+  final IntelligenceConfig activeConfig = config ?? getCurrentIntelligenceConfig();
+  if (activeConfig.apiKey.trim().isEmpty) {
+    throw ("Configure an API key in Intelligence settings first.");
+  }
+  if (activeConfig.model.trim().isEmpty) {
+    throw ("Select a model in Intelligence settings first.");
+  }
+
+  final String prompt = _buildNotificationTransactionPrompt(
+    notificationMessage: notificationMessage,
+    categories: categories,
+    wallets: wallets,
+    selectedWallet: selectedWallet,
+  );
+
+  const String systemPrompt =
+      "You analyze financial notification text and return strict JSON only. "
+      "Do not invent transactions or fields that are not supported by the notification text.";
+
+  final String responseText;
+  if (activeConfig.provider == intelligenceProviderGemini) {
+    responseText = await _analyzeTextWithGemini(
+      config: activeConfig,
+      prompt: "$systemPrompt\n\n$prompt",
+    );
+  } else {
+    responseText = await _analyzeTextWithOpenAICompatible(
+      config: activeConfig,
+      systemPrompt: systemPrompt,
+      prompt: prompt,
+    );
+  }
+
+  final Map<String, dynamic> parsedJson = _extractJsonObject(responseText);
+  return NotificationTransactionAnalysis.fromJson(parsedJson);
 }
 
 Future<ReceiptImageSelection> pickReceiptImage({
@@ -1029,6 +1127,96 @@ String _buildNotificationTemplatePrompt({
     )
     ..writeln(
       "- If the notification is too ambiguous or does not have reusable structure, return canCreateTemplate=false and set template fields to null.",
+    )
+    ..writeln()
+    ..writeln("Available categories:");
+
+  for (final TransactionCategory category in categories) {
+    buffer.writeln("- ${category.name}");
+  }
+
+  buffer
+    ..writeln()
+    ..writeln("Available accounts:");
+
+  for (final TransactionWallet wallet in wallets) {
+    final String currency = wallet.currency?.trim().isNotEmpty == true
+        ? " (${wallet.currency})"
+        : "";
+    buffer.writeln("- ${wallet.name}$currency");
+  }
+
+  if (selectedWallet != null) {
+    buffer
+      ..writeln()
+      ..writeln(
+        "Current selected account: ${selectedWallet.name}${selectedWallet.currency == null ? '' : ' (${selectedWallet.currency})'}",
+      );
+  }
+
+  buffer
+    ..writeln()
+    ..writeln("Notification text:")
+    ..writeln("<<<MESSAGE")
+    ..writeln(notificationMessage)
+    ..writeln("MESSAGE");
+
+  return buffer.toString();
+}
+
+String _buildNotificationTransactionPrompt({
+  required String notificationMessage,
+  required List<TransactionCategory> categories,
+  required List<TransactionWallet> wallets,
+  required TransactionWallet? selectedWallet,
+}) {
+  final StringBuffer buffer = StringBuffer()
+    ..writeln(
+      "Analyze this notification and decide whether it describes a single completed financial transaction.",
+    )
+    ..writeln("Return a single JSON object only.")
+    ..writeln("Do not wrap the JSON in markdown. Do not add commentary.")
+    ..writeln(
+      "Today is ${DateTime.now().toIso8601String().split('T').first}.",
+    )
+    ..writeln()
+    ..writeln("Use this JSON shape exactly:")
+    ..writeln("{")
+    ..writeln('  "isTransaction": boolean,')
+    ..writeln('  "title": string|null,')
+    ..writeln('  "amount": number|null,')
+    ..writeln('  "direction": "expense"|"income"|null,')
+    ..writeln('  "transactionDate": "YYYY-MM-DD"|"YYYY-MM-DDTHH:MM:SS"|null,')
+    ..writeln('  "suggestedCategoryName": string|null,')
+    ..writeln('  "suggestedAccountName": string|null,')
+    ..writeln('  "reasoning": string|null,')
+    ..writeln('  "confidence": number|null')
+    ..writeln("}")
+    ..writeln()
+    ..writeln("Rules:")
+    ..writeln(
+      "- Return isTransaction=false for OTPs, offers, reminders, balance summaries, low balance alerts, card controls, account statements, and any notification that does not describe one completed transaction.",
+    )
+    ..writeln(
+      "- title should be the merchant, payee, sender, or source that should be saved as the transaction name.",
+    )
+    ..writeln(
+      "- amount must be a positive number with no currency symbols.",
+    )
+    ..writeln(
+      "- direction must be expense when money leaves the account and income when money enters the account.",
+    )
+    ..writeln(
+      "- transactionDate must be null unless the notification explicitly provides the transaction date or time in a way that can be trusted.",
+    )
+    ..writeln(
+      "- suggestedCategoryName must be chosen only from the available categories below when confident. Otherwise return null.",
+    )
+    ..writeln(
+      "- suggestedAccountName must be chosen only from the available accounts below when confident. Otherwise return null.",
+    )
+    ..writeln(
+      "- confidence should be 0 to 100 and reflect how certain you are that this is a single transaction and that the extracted fields are correct.",
     )
     ..writeln()
     ..writeln("Available categories:");

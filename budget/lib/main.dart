@@ -8,6 +8,7 @@ import 'package:budget/struct/logging.dart';
 import 'package:budget/widgets/fadeIn.dart';
 import 'package:budget/struct/languageMap.dart';
 import 'package:budget/struct/initializeBiometrics.dart';
+import 'package:budget/struct/notificationBackground.dart';
 import 'package:budget/widgets/util/appLinks.dart';
 import 'package:budget/widgets/util/onAppResume.dart';
 import 'package:budget/widgets/util/watchForDayChange.dart';
@@ -40,6 +41,11 @@ import 'package:easy_localization/easy_localization.dart';
 bool enableDevicePreview = false && kDebugMode;
 bool allowDebugFlags = true || kIsWeb;
 bool allowDangerousDebugFlags = true;
+
+@pragma('vm:entry-point')
+Future<void> notificationBackgroundMain() async {
+  await runNotificationBackgroundMain();
+}
 
 void main() async {
   captureLogs(() async {
