@@ -240,6 +240,7 @@ class NotificationTransactionAnalysis {
     required this.isTransaction,
     this.title,
     this.amount,
+    this.currencyCode,
     this.direction,
     this.transactionDate,
     this.suggestedCategoryName,
@@ -251,6 +252,7 @@ class NotificationTransactionAnalysis {
   final bool isTransaction;
   final String? title;
   final double? amount;
+  final String? currencyCode;
   final NotificationTransactionDirection? direction;
   final DateTime? transactionDate;
   final String? suggestedCategoryName;
@@ -270,6 +272,7 @@ class NotificationTransactionAnalysis {
         json["title"] ?? json["transactionTitle"] ?? json["merchantName"],
       ),
       amount: _doubleFromJson(json["amount"] ?? json["totalAmount"]),
+      currencyCode: _stringFromJson(json["currencyCode"] ?? json["currency"]),
       direction: rawDirection == "income"
           ? NotificationTransactionDirection.income
           : rawDirection == "expense"
@@ -403,39 +406,17 @@ TransactionCategory? matchReceiptCategory(
 
 TransactionWallet? matchReceiptWallet(
   String? suggestedWalletName,
-  List<TransactionWallet> wallets,
+  List<TransactionWallet> wallets, {
+  String? preferredCurrencyKey,
+  String? preferredAccountType,
+}
 ) {
-  if (suggestedWalletName == null || suggestedWalletName.trim().isEmpty) {
-    return null;
-  }
-
-  final String suggested = _normalizeLookupValue(suggestedWalletName);
-  for (final TransactionWallet wallet in wallets) {
-    if (_normalizeLookupValue(wallet.name) == suggested) {
-      return wallet;
-    }
-    for (final String tag in sanitizeWalletAccountTags(wallet.accountTags)) {
-      final String normalizedTag = _normalizeLookupValue(tag);
-      if (normalizedTag == suggested || suggested.contains(normalizedTag)) {
-        return wallet;
-      }
-    }
-  }
-  for (final TransactionWallet wallet in wallets) {
-    final String normalized = _normalizeLookupValue(wallet.name);
-    if (normalized.contains(suggested) || suggested.contains(normalized)) {
-      return wallet;
-    }
-    for (final String tag in sanitizeWalletAccountTags(wallet.accountTags)) {
-      final String normalizedTag = _normalizeLookupValue(tag);
-      if (normalizedTag.isNotEmpty &&
-          (normalizedTag.contains(suggested) ||
-              suggested.contains(normalizedTag))) {
-        return wallet;
-      }
-    }
-  }
-  return null;
+  return matchWalletByNameOrTag(
+    suggestedWalletName,
+    wallets,
+    preferredCurrencyKey: preferredCurrencyKey,
+    preferredAccountType: preferredAccountType,
+  );
 }
 
 Future<List<IntelligenceModelOption>> fetchAvailableIntelligenceModels({
@@ -1197,6 +1178,7 @@ String _buildNotificationTransactionPrompt({
     ..writeln('  "isTransaction": boolean,')
     ..writeln('  "title": string|null,')
     ..writeln('  "amount": number|null,')
+    ..writeln('  "currencyCode": string|null,')
     ..writeln('  "direction": "expense"|"income"|null,')
     ..writeln('  "transactionDate": "YYYY-MM-DD"|"YYYY-MM-DDTHH:MM:SS"|null,')
     ..writeln('  "suggestedCategoryName": string|null,')
@@ -1214,6 +1196,9 @@ String _buildNotificationTransactionPrompt({
     )
     ..writeln(
       "- amount must be a positive number with no currency symbols.",
+    )
+    ..writeln(
+      "- currencyCode must be the transaction currency code when the notification explicitly states it or clearly implies it from an amount symbol or currency code. Otherwise return null.",
     )
     ..writeln(
       "- direction must be expense when money leaves the account and income when money enters the account.",
@@ -1245,17 +1230,14 @@ String _buildNotificationTransactionPrompt({
     ..writeln("Available accounts:");
 
   for (final TransactionWallet wallet in wallets) {
-    final String currency = wallet.currency?.trim().isNotEmpty == true
-        ? " (${wallet.currency})"
-        : "";
-    buffer.writeln("- ${wallet.name}$currency");
+    buffer.writeln("- ${buildWalletMatchingContext(wallet)}");
   }
 
   if (selectedWallet != null) {
     buffer
       ..writeln()
       ..writeln(
-        "Current selected account: ${selectedWallet.name}${selectedWallet.currency == null ? '' : ' (${selectedWallet.currency})'}",
+        "Current selected account: ${buildWalletMatchingContext(selectedWallet)}",
       );
   }
 

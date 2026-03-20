@@ -5,6 +5,7 @@ import 'package:budget/database/tables.dart';
 import 'package:budget/pages/addEmailTemplate.dart';
 import 'package:budget/pages/addTransactionPage.dart';
 import 'package:budget/pages/editCategoriesPage.dart';
+import 'package:budget/struct/currencyFunctions.dart';
 import 'package:budget/struct/databaseGlobal.dart';
 import 'package:budget/struct/intelligence.dart';
 import 'package:budget/struct/notificationCapture.dart';
@@ -386,14 +387,75 @@ int _getNextWalletOrder(List<TransactionWallet> wallets) {
   return maxOrder + 1;
 }
 
+TransactionWallet? _findWalletByPk(
+  List<TransactionWallet> wallets,
+  String? walletPk,
+) {
+  final String normalizedWalletPk = walletPk?.trim() ?? '';
+  if (normalizedWalletPk.isEmpty) return null;
+  for (final TransactionWallet wallet in wallets) {
+    if (wallet.walletPk == normalizedWalletPk) {
+      return wallet;
+    }
+  }
+  return null;
+}
+
+bool _walletCanUseCurrency(TransactionWallet? wallet, String? currencyKey) {
+  if (wallet == null) return false;
+  final String? normalizedCurrencyKey = normalizeCurrencyKey(currencyKey);
+  if (normalizedCurrencyKey == null) return true;
+  return walletMatchesCurrency(wallet, normalizedCurrencyKey);
+}
+
+TransactionWallet? _findSingleWalletMatchingCurrency(
+  List<TransactionWallet> wallets,
+  String? currencyKey,
+) {
+  final String? normalizedCurrencyKey = normalizeCurrencyKey(currencyKey);
+  if (normalizedCurrencyKey == null) return null;
+
+  final List<TransactionWallet> matches = wallets.where((wallet) {
+    return walletMatchesCurrency(wallet, normalizedCurrencyKey);
+  }).toList();
+  if (matches.length == 1) {
+    return matches.first;
+  }
+  return null;
+}
+
+String? _resolveNotificationCurrencyKey({
+  required String notificationMessage,
+  required NotificationTransactionAnalysis analysis,
+  required List<TransactionWallet> wallets,
+  required TransactionWallet? selectedWallet,
+}) {
+  final List<String> preferredCurrencies = <String>[
+    for (final TransactionWallet wallet in wallets) wallet.currency ?? '',
+    selectedWallet?.currency ?? '',
+  ].map(normalizeCurrencyKey).whereType<String>().toSet().toList();
+
+  final String? exactCurrencyKey = extractCurrencyKeyFromText(
+    notificationMessage,
+    preferredCurrencyKeys: preferredCurrencies,
+  );
+  final String? aiCurrencyKey = normalizeCurrencyKey(analysis.currencyCode);
+  return exactCurrencyKey ?? aiCurrencyKey;
+}
+
 Future<TransactionWallet> _createWalletForNotificationIdentifier(
   NotificationAccountIdentifier identifier,
   List<TransactionWallet> wallets, {
   TransactionWallet? selectedWallet,
+  String? preferredCurrencyKey,
 }) async {
   final String generatedName = buildAutoCreatedWalletName(identifier);
-  final TransactionWallet? existingByName =
-      matchReceiptWallet(generatedName, wallets);
+  final TransactionWallet? existingByName = matchReceiptWallet(
+    generatedName,
+    wallets,
+    preferredCurrencyKey: preferredCurrencyKey,
+    preferredAccountType: identifier.accountType,
+  );
   if (existingByName != null) {
     final TransactionWallet mergedWallet = mergeWalletMetadataWithIdentifier(
       existingByName,
@@ -414,7 +476,9 @@ Future<TransactionWallet> _createWalletForNotificationIdentifier(
       dateCreated: DateTime.now(),
       dateTimeModified: null,
       order: _getNextWalletOrder(wallets),
-      currency: selectedWallet?.currency ?? getDevicesDefaultCurrencyCode(),
+        currency: normalizeCurrencyKey(preferredCurrencyKey) ??
+          normalizeCurrencyKey(selectedWallet?.currency) ??
+          getDevicesDefaultCurrencyCode(),
       currencyFormat: selectedWallet?.currencyFormat,
       decimals: selectedWallet?.decimals ?? 2,
       homePageWidgetDisplay: selectedWallet?.homePageWidgetDisplay ??
@@ -436,7 +500,9 @@ Future<TransactionWallet> _createWalletForNotificationIdentifier(
           dateCreated: DateTime.now(),
           dateTimeModified: null,
           order: 0,
-          currency: getDevicesDefaultCurrencyCode(),
+          currency: normalizeCurrencyKey(preferredCurrencyKey) ??
+              normalizeCurrencyKey(selectedWallet?.currency) ??
+              getDevicesDefaultCurrencyCode(),
           currencyFormat: null,
           decimals: 2,
           homePageWidgetDisplay: defaultWalletHomePageWidgetDisplay,
@@ -524,6 +590,14 @@ Future<_NotificationDraft?> _buildNotificationDraft(
         learnedSuggestion.canonicalTitle?.trim().isNotEmpty == true
             ? learnedSuggestion.canonicalTitle!.trim()
             : extractedTitle;
+    final String? resolvedCurrencyKey = _resolveNotificationCurrencyKey(
+      notificationMessage: exactNotificationMessage.isEmpty
+        ? messageString
+        : exactNotificationMessage,
+      analysis: analysis,
+      wallets: wallets,
+      selectedWallet: selectedWallet,
+    );
 
     final _ResolvedNotificationCategorySelection learnedCategorySelection =
         await _resolveNotificationCategorySelectionFromPks(
@@ -569,8 +643,19 @@ Future<_NotificationDraft?> _buildNotificationDraft(
 
     TransactionWallet? wallet;
     NotificationAccountIdentifier? matchedAccountIdentifier;
+    final String? preferredAccountType = accountIdentifiers.isNotEmpty
+        ? accountIdentifiers.first.accountType
+        : inferSpecificWalletAccountTypeFromText(
+            analysis.suggestedAccountName?.trim().isNotEmpty == true
+                ? analysis.suggestedAccountName!
+                : exactNotificationMessage,
+          );
     if (accountIdentifiers.isNotEmpty) {
-      wallet = matchWalletByAccountIdentifiers(accountIdentifiers, wallets);
+      wallet = matchWalletByAccountIdentifiers(
+        accountIdentifiers,
+        wallets,
+        preferredCurrencyKey: resolvedCurrencyKey,
+      );
       matchedAccountIdentifier =
           _findMatchedNotificationAccountIdentifier(wallet, accountIdentifiers);
       if (wallet == null) {
@@ -579,18 +664,37 @@ Future<_NotificationDraft?> _buildNotificationDraft(
           matchedAccountIdentifier,
           wallets,
           selectedWallet: selectedWallet,
+          preferredCurrencyKey: resolvedCurrencyKey,
         );
       }
     }
-    if (wallet == null) {
-      final String? learnedWalletPk =
-          learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
-      if (learnedWalletPk?.trim().isNotEmpty == true) {
-        wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
-      }
+    final TransactionWallet? learnedTitleWallet =
+        _findWalletByPk(wallets, learnedSuggestion.walletPk);
+    if (wallet == null &&
+        _walletCanUseCurrency(learnedTitleWallet, resolvedCurrencyKey)) {
+      wallet = learnedTitleWallet;
     }
-    wallet ??= matchReceiptWallet(analysis.suggestedAccountName, wallets);
-    wallet ??= selectedWallet;
+    wallet ??= matchReceiptWallet(
+      analysis.suggestedAccountName,
+      wallets,
+      preferredCurrencyKey: resolvedCurrencyKey,
+      preferredAccountType: preferredAccountType,
+    );
+
+    final TransactionWallet? learnedPackageWallet =
+        _findWalletByPk(wallets, learnedSuggestion.packageWalletPk);
+    if (wallet == null &&
+        _walletCanUseCurrency(learnedPackageWallet, resolvedCurrencyKey)) {
+      wallet = learnedPackageWallet;
+    }
+
+    wallet ??= _findSingleWalletMatchingCurrency(wallets, resolvedCurrencyKey);
+    if (wallet == null &&
+        selectedWallet != null &&
+        resolvedCurrencyKey != null &&
+        walletMatchesCurrency(selectedWallet, resolvedCurrencyKey)) {
+      wallet = selectedWallet;
+    }
 
     final bool usedFallbackCategory = learnedCategorySelection.mainCategory == null &&
         aiCategorySelection.mainCategory == null &&
@@ -808,6 +912,7 @@ Future<bool> queueTransactionFromMessage(String messageString,
         hasAmount: draft.absoluteAmount > 0,
         hasTitle: draft.title.trim().isNotEmpty,
         hasCategory: draft.category != null,
+        hasWallet: draft.wallet != null,
       )) {
     final Transaction? createdTransaction = await _autoCreateNotificationTransaction(
       draft,

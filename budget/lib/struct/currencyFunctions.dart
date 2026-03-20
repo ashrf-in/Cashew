@@ -117,6 +117,141 @@ String getCurrencySymbol(String? currencyKey) {
     .toString();
 }
 
+const Map<String, String> _disambiguatedCurrencyTokenMap = <String, String>{
+  'US\$': 'usd',
+  'AU\$': 'aud',
+  'A\$': 'aud',
+  'CA\$': 'cad',
+  'C\$': 'cad',
+  'SG\$': 'sgd',
+  'S\$': 'sgd',
+  'HK\$': 'hkd',
+  'NZ\$': 'nzd',
+};
+
+String _normalizeCurrencyLookupToken(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '');
+}
+
+String? normalizeCurrencyKey(String? currencyValue) {
+  final String rawValue = currencyValue?.trim() ?? '';
+  if (rawValue.isEmpty) return null;
+
+  final String uppercaseToken =
+      rawValue.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+  final String? mappedToken = _disambiguatedCurrencyTokenMap[uppercaseToken];
+  if (mappedToken != null) {
+    return mappedToken;
+  }
+
+  final String normalizedToken = _normalizeCurrencyLookupToken(rawValue);
+  if (normalizedToken.isEmpty) return null;
+
+  for (final MapEntry<String, dynamic> entry in currenciesJSON.entries) {
+    final dynamic value = entry.value;
+    final String normalizedKey = _normalizeCurrencyLookupToken(entry.key);
+    final String normalizedCode = value is Map
+        ? _normalizeCurrencyLookupToken(value['Code']?.toString() ?? '')
+        : '';
+    if (normalizedToken == normalizedKey || normalizedToken == normalizedCode) {
+      return entry.key.toLowerCase();
+    }
+  }
+
+  return null;
+}
+
+String? extractCurrencyKeyFromText(
+  String text, {
+  Iterable<String>? preferredCurrencyKeys,
+}) {
+  final String trimmedText = text.trim();
+  if (trimmedText.isEmpty) return null;
+
+  final List<String> normalizedPreferredCurrencies = preferredCurrencyKeys
+          ?.map(normalizeCurrencyKey)
+          .whereType<String>()
+          .toSet()
+          .toList() ??
+      <String>[];
+
+  final List<RegExp> patterns = <RegExp>[
+    RegExp(
+      r'((?:US|AU|CA|SG|HK|NZ)\$|[$₹€£¥₩₦₨₱₫₽₴₺₲₵₭₮₡₸₼]|[A-Za-z]{3,5})\s*[+\-−]?\s*\d[\d,]*(?:\.\d+)?',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'[+\-−]?\s*\d[\d,]*(?:\.\d+)?\s*((?:US|AU|CA|SG|HK|NZ)\$|[A-Za-z]{3,5})\b',
+      caseSensitive: false,
+    ),
+  ];
+
+  for (final RegExp pattern in patterns) {
+    for (final RegExpMatch match in pattern.allMatches(trimmedText)) {
+      final String token = match.group(1)?.trim() ?? '';
+      final String? currencyKey = _resolveCurrencyToken(
+        token,
+        preferredCurrencyKeys: normalizedPreferredCurrencies,
+      );
+      if (currencyKey != null) {
+        return currencyKey;
+      }
+    }
+  }
+
+  return null;
+}
+
+String? _resolveCurrencyToken(
+  String token, {
+  required List<String> preferredCurrencyKeys,
+}) {
+  if (token.isEmpty) return null;
+
+  final String uppercaseToken =
+      token.toUpperCase().replaceAll(RegExp(r'\s+'), '');
+  final String? mappedToken = _disambiguatedCurrencyTokenMap[uppercaseToken];
+  if (mappedToken != null) {
+    return mappedToken;
+  }
+
+  final String? normalizedCurrency = normalizeCurrencyKey(token);
+  if (normalizedCurrency != null) {
+    return normalizedCurrency;
+  }
+
+  final List<String> symbolMatches = _findCurrencyKeysForSymbol(token);
+  if (symbolMatches.isEmpty) return null;
+  if (symbolMatches.length == 1) return symbolMatches.first;
+
+  final List<String> preferredMatches = symbolMatches
+      .where((currencyKey) => preferredCurrencyKeys.contains(currencyKey))
+      .toList();
+  if (preferredMatches.length == 1) {
+    return preferredMatches.first;
+  }
+
+  return null;
+}
+
+List<String> _findCurrencyKeysForSymbol(String symbolToken) {
+  final List<String> matches = <String>[];
+  final Set<String> seen = <String>{};
+
+  for (final MapEntry<String, dynamic> entry in currenciesJSON.entries) {
+    final dynamic value = entry.value;
+    if (value is! Map) continue;
+    final String symbol = value['Symbol']?.toString().trim() ?? '';
+    if (symbol.isEmpty || symbol != symbolToken) continue;
+    final String currencyKey = entry.key.toLowerCase();
+    if (seen.add(currencyKey)) {
+      matches.add(currencyKey);
+    }
+  }
+
+  return matches;
+}
+
 // assume selected wallets currency
 String getCurrencyString(AllWallets allWallets, {String? currencyKey}) {
   String? selectedWalletCurrency =

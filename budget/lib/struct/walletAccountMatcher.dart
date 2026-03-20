@@ -1,4 +1,5 @@
 import 'package:budget/database/tables.dart';
+import 'package:budget/struct/currencyFunctions.dart';
 import 'package:drift/drift.dart' show Value;
 
 const String walletAccountTypeBank = 'bank';
@@ -79,6 +80,17 @@ String getWalletAutoCreatedNameSuffix(String? value) {
     default:
       return 'Bank Ac';
   }
+}
+
+bool walletMatchesCurrency(TransactionWallet wallet, String? currencyKey) {
+  final String? normalizedWalletCurrency = normalizeCurrencyKey(wallet.currency) ??
+      wallet.currency?.trim().toLowerCase();
+  final String? normalizedCurrencyKey = normalizeCurrencyKey(currencyKey) ??
+      currencyKey?.trim().toLowerCase();
+  if (normalizedWalletCurrency == null || normalizedCurrencyKey == null) {
+    return false;
+  }
+  return normalizedWalletCurrency == normalizedCurrencyKey;
 }
 
 String mergePreferredWalletAccountType(String? primary, String? secondary) {
@@ -218,7 +230,9 @@ String buildAutoCreatedWalletName(NotificationAccountIdentifier identifier) {
 
 TransactionWallet? matchWalletByAccountIdentifiers(
   List<NotificationAccountIdentifier> identifiers,
-  List<TransactionWallet> wallets,
+  List<TransactionWallet> wallets, {
+  String? preferredCurrencyKey,
+}
 ) {
   if (identifiers.isEmpty || wallets.isEmpty) return null;
 
@@ -236,6 +250,19 @@ TransactionWallet? matchWalletByAccountIdentifiers(
     if (matches.isEmpty) continue;
     if (matches.length == 1) return matches.first;
 
+    final List<TransactionWallet> currencyMatches = matches.where((wallet) {
+      return walletMatchesCurrency(wallet, preferredCurrencyKey);
+    }).toList();
+    final List<TransactionWallet> typedCurrencyMatches =
+        currencyMatches.where((wallet) {
+      return sanitizeWalletAccountType(wallet.accountType) ==
+          sanitizeWalletAccountType(identifier.accountType);
+    }).toList();
+    if (typedCurrencyMatches.isNotEmpty) {
+      return typedCurrencyMatches.first;
+    }
+    if (currencyMatches.length == 1) return currencyMatches.first;
+
     final List<TransactionWallet> typedMatches = matches.where((wallet) {
       return sanitizeWalletAccountType(wallet.accountType) ==
           sanitizeWalletAccountType(identifier.accountType);
@@ -247,6 +274,100 @@ TransactionWallet? matchWalletByAccountIdentifiers(
   }
 
   return null;
+}
+
+TransactionWallet? matchWalletByNameOrTag(
+  String? suggestedWalletName,
+  List<TransactionWallet> wallets, {
+  String? preferredCurrencyKey,
+  String? preferredAccountType,
+}) {
+  if (suggestedWalletName == null || suggestedWalletName.trim().isEmpty) {
+    return null;
+  }
+
+  final String normalizedSuggestion =
+      _normalizeWalletLookupValue(suggestedWalletName);
+  final String compactSuggestion =
+      _compactWalletLookupValue(suggestedWalletName);
+  if (normalizedSuggestion.isEmpty || compactSuggestion.isEmpty) {
+    return null;
+  }
+
+  final String? normalizedAccountType =
+      _nullableWalletAccountType(preferredAccountType);
+  final List<_ScoredWalletCandidate> candidates = <_ScoredWalletCandidate>[];
+
+  for (final TransactionWallet wallet in wallets) {
+    int score = 0;
+    final String normalizedWalletName = _normalizeWalletLookupValue(wallet.name);
+    final String compactWalletName = _compactWalletLookupValue(wallet.name);
+
+    if (compactWalletName.isNotEmpty) {
+      if (compactSuggestion == compactWalletName) {
+        score = 120;
+      } else if (compactSuggestion.contains(compactWalletName) &&
+          compactWalletName.length >= 4) {
+        score = 88;
+      } else if (compactWalletName.contains(compactSuggestion) &&
+          compactSuggestion.length >= 4) {
+        score = 76;
+      } else if (normalizedSuggestion == normalizedWalletName) {
+        score = 120;
+      }
+    }
+
+    for (final String tag in sanitizeWalletAccountTags(wallet.accountTags)) {
+      final String normalizedTag = normalizeWalletAccountTag(tag);
+      if (normalizedTag.isEmpty) continue;
+
+      if (compactSuggestion == normalizedTag && score < 115) {
+        score = 115;
+      } else if (compactSuggestion.contains(normalizedTag) && score < 100) {
+        score = 100;
+      } else if (normalizedTag.contains(compactSuggestion) &&
+          compactSuggestion.length >= 4 &&
+          score < 82) {
+        score = 82;
+      }
+    }
+
+    if (score <= 0) continue;
+
+    if (preferredCurrencyKey != null) {
+      if (walletMatchesCurrency(wallet, preferredCurrencyKey)) {
+        score += 20;
+      } else if (normalizeCurrencyKey(wallet.currency) != null) {
+        score -= 15;
+      }
+    }
+
+    if (normalizedAccountType != null) {
+      if (sanitizeWalletAccountType(wallet.accountType) == normalizedAccountType) {
+        score += 10;
+      } else if (normalizedAccountType != walletAccountTypeBank) {
+        score -= 4;
+      }
+    }
+
+    candidates.add(_ScoredWalletCandidate(wallet: wallet, score: score));
+  }
+
+  if (candidates.isEmpty) return null;
+
+  candidates.sort((a, b) => b.score.compareTo(a.score));
+  final _ScoredWalletCandidate bestCandidate = candidates.first;
+  if (bestCandidate.score < 60) return null;
+  if (candidates.length > 1) {
+    final _ScoredWalletCandidate secondCandidate = candidates[1];
+    if (bestCandidate.score == secondCandidate.score) return null;
+    if (bestCandidate.score < 110 &&
+        bestCandidate.score - secondCandidate.score < 10) {
+      return null;
+    }
+  }
+
+  return bestCandidate.wallet;
 }
 
 List<NotificationAccountIdentifier> extractNotificationAccountIdentifiers(
@@ -356,10 +477,7 @@ List<NotificationAccountIdentifier> extractNotificationAccountIdentifiers(
   return identifiers;
 }
 
-String inferWalletAccountTypeFromText(
-  String text, {
-  String fallbackType = walletAccountTypeBank,
-}) {
+String? inferSpecificWalletAccountTypeFromText(String text) {
   final String normalized = text.toLowerCase();
   if (normalized.contains('credit card') || normalized.contains('credit-card')) {
     return walletAccountTypeCreditCard;
@@ -387,5 +505,31 @@ String inferWalletAccountTypeFromText(
       normalized.contains('rupay')) {
     return walletAccountTypeCard;
   }
-  return sanitizeWalletAccountType(fallbackType);
+  return null;
+}
+
+String inferWalletAccountTypeFromText(
+  String text, {
+  String fallbackType = walletAccountTypeBank,
+}) {
+  return inferSpecificWalletAccountTypeFromText(text) ??
+      sanitizeWalletAccountType(fallbackType);
+}
+
+String _normalizeWalletLookupValue(String value) {
+  return value
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .trim();
+}
+
+String _compactWalletLookupValue(String value) {
+  return _normalizeWalletLookupValue(value).replaceAll(' ', '');
+}
+
+class _ScoredWalletCandidate {
+  const _ScoredWalletCandidate({required this.wallet, required this.score});
+
+  final TransactionWallet wallet;
+  final int score;
 }

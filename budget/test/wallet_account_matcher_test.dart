@@ -7,6 +7,7 @@ TransactionWallet buildWallet({
   required String name,
   String? accountType,
   List<String>? accountTags,
+  String? currency,
 }) {
   return TransactionWallet(
     walletPk: walletPk,
@@ -18,7 +19,7 @@ TransactionWallet buildWallet({
     dateCreated: DateTime(2024, 1, 1),
     dateTimeModified: null,
     order: 0,
-    currency: 'usd',
+    currency: currency ?? 'usd',
     currencyFormat: null,
     decimals: 2,
     homePageWidgetDisplay: defaultWalletHomePageWidgetDisplay,
@@ -73,6 +74,65 @@ void main() {
     );
 
     expect(matched?.walletPk, '1');
+  });
+
+  test('prefers matching currency when duplicate tags exist', () {
+    final List<TransactionWallet> wallets = <TransactionWallet>[
+      buildWallet(
+        walletPk: '1',
+        name: 'Travel Card USD',
+        accountType: walletAccountTypeCreditCard,
+        accountTags: <String>['1234'],
+        currency: 'usd',
+      ),
+      buildWallet(
+        walletPk: '2',
+        name: 'Travel Card AED',
+        accountType: walletAccountTypeCreditCard,
+        accountTags: <String>['1234'],
+        currency: 'aed',
+      ),
+    ];
+
+    final TransactionWallet? matched = matchWalletByAccountIdentifiers(
+      const <NotificationAccountIdentifier>[
+        NotificationAccountIdentifier(
+          tag: '1234',
+          accountType: walletAccountTypeCreditCard,
+          matchedText: 'card xx1234',
+        ),
+      ],
+      wallets,
+      preferredCurrencyKey: 'aed',
+    );
+
+    expect(matched?.walletPk, '2');
+  });
+
+  test('matches wallet names with currency preference', () {
+    final List<TransactionWallet> wallets = <TransactionWallet>[
+      buildWallet(walletPk: '1', name: 'Main Card', currency: 'usd'),
+      buildWallet(walletPk: '2', name: 'Main Card', currency: 'aed'),
+    ];
+
+    final TransactionWallet? matched = matchWalletByNameOrTag(
+      'Main Card',
+      wallets,
+      preferredCurrencyKey: 'aed',
+    );
+
+    expect(matched?.walletPk, '2');
+  });
+
+  test('returns null for ambiguous generic wallet hints', () {
+    final List<TransactionWallet> wallets = <TransactionWallet>[
+      buildWallet(walletPk: '1', name: 'Travel Card'),
+      buildWallet(walletPk: '2', name: 'Rewards Card'),
+    ];
+
+    final TransactionWallet? matched = matchWalletByNameOrTag('Card', wallets);
+
+    expect(matched, isNull);
   });
 
   test('merges wallet metadata and keeps the more specific type', () {

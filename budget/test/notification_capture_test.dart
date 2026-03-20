@@ -65,6 +65,7 @@ void main() {
           hasAmount: true,
           hasTitle: true,
           hasCategory: true,
+          hasWallet: true,
         ),
         isFalse,
       );
@@ -76,12 +77,13 @@ void main() {
           hasAmount: true,
           hasTitle: true,
           hasCategory: true,
+          hasWallet: true,
         ),
         isTrue,
       );
     });
 
-    test('instant mode only requires a complete draft', () {
+    test('instant mode still requires a resolved wallet', () {
       expect(
         shouldAutoCreateNotification(
           captureMode: notificationCaptureModeInstant,
@@ -89,6 +91,19 @@ void main() {
           hasAmount: true,
           hasTitle: true,
           hasCategory: true,
+          hasWallet: false,
+        ),
+        isFalse,
+      );
+
+      expect(
+        shouldAutoCreateNotification(
+          captureMode: notificationCaptureModeInstant,
+          confidence: 10,
+          hasAmount: true,
+          hasTitle: true,
+          hasCategory: true,
+          hasWallet: true,
         ),
         isTrue,
       );

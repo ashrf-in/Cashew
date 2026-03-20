@@ -127,8 +127,9 @@ bool shouldAutoCreateNotification({
   required bool hasAmount,
   required bool hasTitle,
   required bool hasCategory,
+  required bool hasWallet,
 }) {
-  if (!hasAmount || !hasTitle || !hasCategory) return false;
+  if (!hasAmount || !hasTitle || !hasCategory || !hasWallet) return false;
 
   if (captureMode == notificationCaptureModeReview) {
     return false;
