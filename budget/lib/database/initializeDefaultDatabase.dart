@@ -1,5 +1,6 @@
 import 'package:budget/functions.dart';
 import 'package:budget/struct/settings.dart';
+import 'package:budget/struct/walletAccountMatcher.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:budget/database/tables.dart';
 import 'package:budget/struct/databaseGlobal.dart';
@@ -41,6 +42,7 @@ TransactionWallet defaultWallet() {
   return TransactionWallet(
     walletPk: "0",
     name: "default-account-name".tr(),
+    accountType: walletAccountTypeBank,
     dateCreated: DateTime.now(),
     order: 0,
     currency: getDevicesDefaultCurrencyCode(),

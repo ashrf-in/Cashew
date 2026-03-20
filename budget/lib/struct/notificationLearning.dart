@@ -184,6 +184,59 @@ Future<void> learnAcceptedNotificationDraft({
   );
 }
 
+Future<void> reassignNotificationLearningWallets({
+  required String fromWalletPk,
+  required String toWalletPk,
+}) async {
+  final String sourceWalletPk = fromWalletPk.trim();
+  final String targetWalletPk = toWalletPk.trim();
+  if (sourceWalletPk.isEmpty || targetWalletPk.isEmpty) return;
+  if (sourceWalletPk == targetWalletPk) return;
+
+  final Map<String, dynamic> learning = _getNotificationLearning();
+  final List<Map<String, dynamic>> phraseRules =
+      _getMapList(learning["phraseRules"]);
+  final List<Map<String, dynamic>> packageWallets =
+      _getMapList(learning["packageWallets"]);
+
+  final List<Map<String, dynamic>> updatedPhraseRules =
+      <Map<String, dynamic>>[];
+  final Set<String> seenPhraseRules = <String>{};
+  for (final Map<String, dynamic> rule in phraseRules) {
+    final Map<String, dynamic> updatedRule = Map<String, dynamic>.from(rule);
+    if (_asString(updatedRule["walletPk"]) == sourceWalletPk) {
+      updatedRule["walletPk"] = targetWalletPk;
+    }
+    final String dedupeKey =
+        '${_asString(updatedRule["packageName"])}:${_asString(updatedRule["phraseKey"])}';
+    if (!seenPhraseRules.add(dedupeKey)) continue;
+    updatedPhraseRules.add(updatedRule);
+  }
+
+  final List<Map<String, dynamic>> updatedPackageWallets =
+      <Map<String, dynamic>>[];
+  final Set<String> seenPackages = <String>{};
+  for (final Map<String, dynamic> rule in packageWallets) {
+    final Map<String, dynamic> updatedRule = Map<String, dynamic>.from(rule);
+    if (_asString(updatedRule["walletPk"]) == sourceWalletPk) {
+      updatedRule["walletPk"] = targetWalletPk;
+    }
+    final String packageName = _asString(updatedRule["packageName"]);
+    if (packageName.isEmpty || !seenPackages.add(packageName)) continue;
+    updatedPackageWallets.add(updatedRule);
+  }
+
+  await updateSettings(
+    notificationTransactionLearningSettingKey,
+    {
+      "version": learning["version"] ?? 1,
+      "phraseRules": updatedPhraseRules,
+      "packageWallets": updatedPackageWallets,
+    },
+    updateGlobalState: false,
+  );
+}
+
 Map<String, dynamic> _getNotificationLearning() {
   final dynamic rawLearning =
       appStateSettings[notificationTransactionLearningSettingKey];

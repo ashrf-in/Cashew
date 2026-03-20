@@ -5,7 +5,9 @@ import 'package:budget/pages/addWalletPage.dart';
 import 'package:budget/pages/editAssociatedTitlesPage.dart';
 import 'package:budget/pages/editBudgetPage.dart';
 import 'package:budget/struct/databaseGlobal.dart';
+import 'package:budget/struct/notificationLearning.dart';
 import 'package:budget/struct/settings.dart';
+import 'package:budget/struct/walletAccountMatcher.dart';
 import 'package:budget/widgets/animatedExpanded.dart';
 import 'package:budget/widgets/dropdownSelect.dart';
 import 'package:budget/widgets/fab.dart';
@@ -467,14 +469,27 @@ void mergeWalletPopup(
         popRoute(context);
       }
       openLoadingPopupTryCatch(() async {
+        final TransactionWallet mergedTargetWallet = mergeWalletMetadata(
+          selectedWalletResult,
+          walletOriginal,
+        );
         await database.moveWalletTransactions(
           Provider.of<AllWallets>(context, listen: false),
           walletOriginal.walletPk,
           selectedWalletResult.walletPk,
         );
         if (walletOriginal.walletPk == "0") {
-          await database.convertToPrimaryWallet(selectedWalletResult);
+          await database.convertToPrimaryWallet(mergedTargetWallet);
+          await reassignNotificationLearningWallets(
+            fromWalletPk: selectedWalletResult.walletPk,
+            toWalletPk: '0',
+          );
         } else {
+          await database.createOrUpdateWallet(mergedTargetWallet);
+          await reassignNotificationLearningWallets(
+            fromWalletPk: walletOriginal.walletPk,
+            toWalletPk: selectedWalletResult.walletPk,
+          );
           await database.deleteWallet(
               walletOriginal.walletPk, walletOriginal.order);
         }

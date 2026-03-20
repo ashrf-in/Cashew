@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:budget/database/tables.dart';
 import 'package:budget/struct/notificationCapture.dart';
 import 'package:budget/struct/settings.dart';
+import 'package:budget/struct/walletAccountMatcher.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -413,11 +414,25 @@ TransactionWallet? matchReceiptWallet(
     if (_normalizeLookupValue(wallet.name) == suggested) {
       return wallet;
     }
+    for (final String tag in sanitizeWalletAccountTags(wallet.accountTags)) {
+      final String normalizedTag = _normalizeLookupValue(tag);
+      if (normalizedTag == suggested || suggested.contains(normalizedTag)) {
+        return wallet;
+      }
+    }
   }
   for (final TransactionWallet wallet in wallets) {
     final String normalized = _normalizeLookupValue(wallet.name);
     if (normalized.contains(suggested) || suggested.contains(normalized)) {
       return wallet;
+    }
+    for (final String tag in sanitizeWalletAccountTags(wallet.accountTags)) {
+      final String normalizedTag = _normalizeLookupValue(tag);
+      if (normalizedTag.isNotEmpty &&
+          (normalizedTag.contains(suggested) ||
+              suggested.contains(normalizedTag))) {
+        return wallet;
+      }
     }
   }
   return null;
@@ -1050,17 +1065,14 @@ String _buildReceiptPrompt({
     ..writeln("Available accounts:");
 
   for (final TransactionWallet wallet in wallets) {
-    final String currency = wallet.currency?.trim().isNotEmpty == true
-        ? " (${wallet.currency})"
-        : "";
-    buffer.writeln("- ${wallet.name}$currency");
+    buffer.writeln("- ${buildWalletMatchingContext(wallet)}");
   }
 
   if (selectedWallet != null) {
     buffer
       ..writeln()
       ..writeln(
-        "Current selected account: ${selectedWallet.name}${selectedWallet.currency == null ? '' : ' (${selectedWallet.currency})'}",
+        "Current selected account: ${buildWalletMatchingContext(selectedWallet)}",
       );
   }
 
@@ -1126,6 +1138,9 @@ String _buildNotificationTemplatePrompt({
       "- suggestedAccountName must be chosen only from the available accounts below when confident. Otherwise return null.",
     )
     ..writeln(
+      "- Use account tags or masked account/card suffixes when they clearly map to one available account.",
+    )
+    ..writeln(
       "- If the notification is too ambiguous or does not have reusable structure, return canCreateTemplate=false and set template fields to null.",
     )
     ..writeln()
@@ -1140,17 +1155,14 @@ String _buildNotificationTemplatePrompt({
     ..writeln("Available accounts:");
 
   for (final TransactionWallet wallet in wallets) {
-    final String currency = wallet.currency?.trim().isNotEmpty == true
-        ? " (${wallet.currency})"
-        : "";
-    buffer.writeln("- ${wallet.name}$currency");
+    buffer.writeln("- ${buildWalletMatchingContext(wallet)}");
   }
 
   if (selectedWallet != null) {
     buffer
       ..writeln()
       ..writeln(
-        "Current selected account: ${selectedWallet.name}${selectedWallet.currency == null ? '' : ' (${selectedWallet.currency})'}",
+        "Current selected account: ${buildWalletMatchingContext(selectedWallet)}",
       );
   }
 
@@ -1214,6 +1226,9 @@ String _buildNotificationTransactionPrompt({
     )
     ..writeln(
       "- suggestedAccountName must be chosen only from the available accounts below when confident. Otherwise return null.",
+    )
+    ..writeln(
+      "- Use account tags or masked account/card suffixes when they clearly map to one available account.",
     )
     ..writeln(
       "- confidence should be 0 to 100 and reflect how certain you are that this is a single transaction and that the extracted fields are correct.",

@@ -6,6 +6,7 @@ import 'package:budget/pages/settingsPage.dart';
 import 'package:budget/struct/currencyFunctions.dart';
 import 'package:budget/struct/databaseGlobal.dart';
 import 'package:budget/struct/settings.dart';
+import 'package:budget/struct/walletAccountMatcher.dart';
 import 'package:budget/widgets/animatedExpanded.dart';
 import 'package:budget/widgets/button.dart';
 import 'package:budget/widgets/dropdownSelect.dart';
@@ -65,6 +66,8 @@ class _AddWalletPageState extends State<AddWalletPage> {
   String selectedCurrency =
       getDevicesDefaultCurrencyCode(); //if no currency selected use empty string
   int selectedDecimals = 2;
+  String selectedAccountType = walletAccountTypeBank;
+  String accountTagsInput = '';
   FocusNode _titleFocusNode = FocusNode();
 
   void setSelectedTitle(String title) {
@@ -84,6 +87,22 @@ class _AddWalletPageState extends State<AddWalletPage> {
   void setSelectedCurrency(String currencyKey) {
     setState(() {
       selectedCurrency = currencyKey;
+    });
+    determineBottomButton();
+    return;
+  }
+
+  void setSelectedAccountType(String accountType) {
+    setState(() {
+      selectedAccountType = sanitizeWalletAccountType(accountType);
+    });
+    determineBottomButton();
+    return;
+  }
+
+  void setAccountTagsInput(String value) {
+    setState(() {
+      accountTagsInput = value;
     });
     determineBottomButton();
     return;
@@ -118,6 +137,8 @@ class _AddWalletPageState extends State<AddWalletPage> {
       walletPk: widget.wallet != null ? widget.wallet!.walletPk : "-1",
       name: selectedTitle ?? "",
       colour: toHexString(selectedColor),
+      accountType: sanitizeWalletAccountType(selectedAccountType),
+      accountTags: parseWalletAccountTagsInput(accountTagsInput),
       dateCreated:
           widget.wallet != null ? widget.wallet!.dateCreated : DateTime.now(),
       dateTimeModified: null,
@@ -166,6 +187,9 @@ class _AddWalletPageState extends State<AddWalletPage> {
           : HexColor(widget.wallet!.colour);
       selectedCurrency = widget.wallet!.currency ?? "usd";
       selectedDecimals = widget.wallet!.decimals;
+        selectedAccountType =
+          sanitizeWalletAccountType(widget.wallet!.accountType);
+        accountTagsInput = formatWalletAccountTagsInput(widget.wallet!.accountTags);
     }
     populateCurrencies();
     Future.delayed(Duration.zero, () async {
@@ -472,6 +496,58 @@ class _AddWalletPageState extends State<AddWalletPage> {
           ),
           SliverToBoxAdapter(
             child: SizedBox(height: 15),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsetsDirectional.only(
+                start: 24,
+                end: 24,
+                bottom: 10,
+              ),
+              child: SettingsContainer(
+                title: 'Account type',
+                description:
+                    'Used for notification matching and auto-created accounts',
+                icon: appStateSettings["outlinedIcons"]
+                    ? Icons.account_balance_wallet_outlined
+                    : Icons.account_balance_wallet_rounded,
+                afterWidget: DropdownSelect(
+                  initial: selectedAccountType,
+                  items: walletAccountTypes,
+                  compact: true,
+                  onChanged: setSelectedAccountType,
+                  getLabel: (value) => getWalletAccountTypeLabel(value),
+                ),
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsetsDirectional.symmetric(horizontal: 20),
+              child: TextInput(
+                labelText: 'Account tags, card digits, or account suffixes',
+                initialValue: accountTagsInput,
+                onChanged: setAccountTagsInput,
+                padding: EdgeInsetsDirectional.only(start: 7, end: 7),
+                maxLines: 2,
+                minLines: 1,
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsetsDirectional.only(
+                start: 28,
+                end: 28,
+                bottom: 10,
+              ),
+              child: TextFont(
+                text:
+                    'Separate tags with commas. Add masked card digits like 1234 so notifications can pick the right account.',
+                fontSize: 13,
+                textColor: getColor(context, 'textLight'),
+              ),
+            ),
           ),
           SliverToBoxAdapter(
             child: widget.wallet == null ||

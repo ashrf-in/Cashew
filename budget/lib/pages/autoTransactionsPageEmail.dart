@@ -11,6 +11,7 @@ import 'package:budget/struct/notificationCapture.dart';
 import 'package:budget/struct/notificationLearning.dart';
 import 'package:budget/struct/notificationsGlobal.dart';
 import 'package:budget/struct/settings.dart';
+import 'package:budget/struct/walletAccountMatcher.dart';
 import 'package:budget/widgets/accountAndBackup.dart';
 import 'package:budget/widgets/button.dart';
 import 'package:budget/widgets/categoryIcon.dart';
@@ -68,6 +69,7 @@ class _NotificationDraft {
     required this.category,
     required this.subCategory,
     required this.wallet,
+    required this.accountIdentifier,
     required this.direction,
     required this.confidence,
     required this.transactionDate,
@@ -82,6 +84,7 @@ class _NotificationDraft {
   final TransactionCategory? category;
   final TransactionCategory? subCategory;
   final TransactionWallet? wallet;
+  final NotificationAccountIdentifier? accountIdentifier;
   final NotificationTransactionDirection direction;
   final int confidence;
   final DateTime? transactionDate;
@@ -356,6 +359,115 @@ Future<TransactionCategory?> _getFallbackNotificationCategory(
   return categories.firstOrNull;
 }
 
+NotificationAccountIdentifier? _findMatchedNotificationAccountIdentifier(
+  TransactionWallet? wallet,
+  List<NotificationAccountIdentifier> identifiers,
+) {
+  if (wallet == null || identifiers.isEmpty) return null;
+  final List<String> walletTags = sanitizeWalletAccountTags(wallet.accountTags);
+  for (final NotificationAccountIdentifier identifier in identifiers) {
+    final String normalizedTag = normalizeWalletAccountTag(identifier.tag);
+    if (walletTags.any(
+      (tag) => normalizeWalletAccountTag(tag) == normalizedTag,
+    )) {
+      return identifier;
+    }
+  }
+  return identifiers.firstOrNull;
+}
+
+int _getNextWalletOrder(List<TransactionWallet> wallets) {
+  int maxOrder = -1;
+  for (final TransactionWallet wallet in wallets) {
+    if (wallet.order > maxOrder) {
+      maxOrder = wallet.order;
+    }
+  }
+  return maxOrder + 1;
+}
+
+Future<TransactionWallet> _createWalletForNotificationIdentifier(
+  NotificationAccountIdentifier identifier,
+  List<TransactionWallet> wallets, {
+  TransactionWallet? selectedWallet,
+}) async {
+  final String generatedName = buildAutoCreatedWalletName(identifier);
+  final TransactionWallet? existingByName =
+      matchReceiptWallet(generatedName, wallets);
+  if (existingByName != null) {
+    final TransactionWallet mergedWallet = mergeWalletMetadataWithIdentifier(
+      existingByName,
+      identifier,
+    );
+    await database.createOrUpdateWallet(mergedWallet);
+    return mergedWallet;
+  }
+
+  final int? rowId = await database.createOrUpdateWallet(
+    TransactionWallet(
+      walletPk: '-1',
+      name: generatedName,
+      accountType: sanitizeWalletAccountType(identifier.accountType),
+      accountTags: <String>[identifier.tag],
+      colour: selectedWallet?.colour,
+      iconName: selectedWallet?.iconName,
+      dateCreated: DateTime.now(),
+      dateTimeModified: null,
+      order: _getNextWalletOrder(wallets),
+      currency: selectedWallet?.currency ?? getDevicesDefaultCurrencyCode(),
+      currencyFormat: selectedWallet?.currencyFormat,
+      decimals: selectedWallet?.decimals ?? 2,
+      homePageWidgetDisplay: selectedWallet?.homePageWidgetDisplay ??
+          defaultWalletHomePageWidgetDisplay,
+    ),
+    insert: true,
+  );
+
+  if (rowId == null) {
+    return selectedWallet ??
+        wallets.firstOrNull ??
+        TransactionWallet(
+          walletPk: '0',
+          name: buildAutoCreatedWalletName(identifier),
+          accountType: sanitizeWalletAccountType(identifier.accountType),
+          accountTags: <String>[identifier.tag],
+          colour: null,
+          iconName: null,
+          dateCreated: DateTime.now(),
+          dateTimeModified: null,
+          order: 0,
+          currency: getDevicesDefaultCurrencyCode(),
+          currencyFormat: null,
+          decimals: 2,
+          homePageWidgetDisplay: defaultWalletHomePageWidgetDisplay,
+        );
+  }
+
+  return database.getWalletFromRowId(rowId);
+}
+
+Future<void> _ensureWalletMetadataFromNotificationDraft(
+  _NotificationDraft draft,
+  String walletPk,
+) async {
+  final NotificationAccountIdentifier? identifier = draft.accountIdentifier;
+  if (identifier == null || walletPk.trim().isEmpty) return;
+
+  final TransactionWallet? wallet = await database.getWalletInstanceOrNull(walletPk);
+  if (wallet == null) return;
+
+  final TransactionWallet mergedWallet = mergeWalletMetadataWithIdentifier(
+    wallet,
+    identifier,
+  );
+  if (mergedWallet.accountType == wallet.accountType &&
+      sanitizeWalletAccountTags(mergedWallet.accountTags).join('|') ==
+          sanitizeWalletAccountTags(wallet.accountTags).join('|')) {
+    return;
+  }
+  await database.createOrUpdateWallet(mergedWallet);
+}
+
 Future<_NotificationDraft?> _buildNotificationDraft(
   String messageString,
 ) async {
@@ -371,6 +483,12 @@ Future<_NotificationDraft?> _buildNotificationDraft(
     final String? packageName = extractNotificationPackageName(messageString);
     final String exactNotificationMessage =
         extractExactNotificationMessage(messageString);
+    final List<NotificationAccountIdentifier> accountIdentifiers =
+      extractNotificationAccountIdentifiers(
+      exactNotificationMessage.isEmpty
+        ? messageString
+        : exactNotificationMessage,
+    );
     final List<TransactionCategory> categories =
         await database.getAllCategories(includeSubCategories: true);
     final List<TransactionWallet> wallets = await database.getAllWallets();
@@ -450,10 +568,26 @@ Future<_NotificationDraft?> _buildNotificationDraft(
             fallbackCategorySelection.subCategory;
 
     TransactionWallet? wallet;
-    final String? learnedWalletPk =
-        learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
-    if (learnedWalletPk?.trim().isNotEmpty == true) {
-      wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
+    NotificationAccountIdentifier? matchedAccountIdentifier;
+    if (accountIdentifiers.isNotEmpty) {
+      wallet = matchWalletByAccountIdentifiers(accountIdentifiers, wallets);
+      matchedAccountIdentifier =
+          _findMatchedNotificationAccountIdentifier(wallet, accountIdentifiers);
+      if (wallet == null) {
+        matchedAccountIdentifier = accountIdentifiers.first;
+        wallet = await _createWalletForNotificationIdentifier(
+          matchedAccountIdentifier,
+          wallets,
+          selectedWallet: selectedWallet,
+        );
+      }
+    }
+    if (wallet == null) {
+      final String? learnedWalletPk =
+          learnedSuggestion.walletPk ?? learnedSuggestion.packageWalletPk;
+      if (learnedWalletPk?.trim().isNotEmpty == true) {
+        wallet = await database.getWalletInstanceOrNull(learnedWalletPk!);
+      }
     }
     wallet ??= matchReceiptWallet(analysis.suggestedAccountName, wallets);
     wallet ??= selectedWallet;
@@ -498,6 +632,7 @@ Future<_NotificationDraft?> _buildNotificationDraft(
       category: category,
       subCategory: subCategory,
       wallet: wallet,
+      accountIdentifier: matchedAccountIdentifier,
       direction: direction,
       confidence: confidence,
       transactionDate: analysis.transactionDate,
@@ -573,6 +708,10 @@ Future<Transaction?> _autoCreateNotificationTransaction(
     categoryPk: transactionJustAdded.categoryFk,
     subCategoryPk: transactionJustAdded.subCategoryFk,
     walletPk: transactionJustAdded.walletFk,
+  );
+  await _ensureWalletMetadataFromNotificationDraft(
+    draft,
+    transactionJustAdded.walletFk,
   );
   await showNotificationTransactionSavedNotification(transactionJustAdded);
   return transactionJustAdded;
@@ -692,6 +831,10 @@ Future<bool> queueTransactionFromMessage(String messageString,
         selectedWallet: draft.wallet,
         selectedDate: resolvedDate,
         onTransactionSaved: (transaction) async {
+          await _ensureWalletMetadataFromNotificationDraft(
+            draft,
+            transaction.walletFk,
+          );
           await learnAcceptedNotificationDraft(
             packageName: draft.packageName,
             rawTitle: draft.rawTitle,

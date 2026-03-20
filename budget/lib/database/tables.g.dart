@@ -37,6 +37,19 @@ class $WalletsTable extends Wallets
   late final GeneratedColumn<String> iconName = GeneratedColumn<String>(
       'icon_name', aliasedName, true,
       type: DriftSqlType.string, requiredDuringInsert: false);
+    static const VerificationMeta _accountTypeMeta =
+      const VerificationMeta('accountType');
+    @override
+    late final GeneratedColumn<String> accountType = GeneratedColumn<String>(
+      'account_type', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
+    static const VerificationMeta _accountTagsMeta =
+      const VerificationMeta('accountTags');
+    @override
+    late final GeneratedColumnWithTypeConverter<List<String>?, String>
+      accountTags = GeneratedColumn<String>('account_tags', aliasedName, true,
+          type: DriftSqlType.string, requiredDuringInsert: false)
+        .withConverter<List<String>?>($WalletsTable.$converteraccountTagsn);
   static const VerificationMeta _dateCreatedMeta =
       const VerificationMeta('dateCreated');
   @override
@@ -95,6 +108,8 @@ class $WalletsTable extends Wallets
         name,
         colour,
         iconName,
+        accountType,
+        accountTags,
         dateCreated,
         dateTimeModified,
         order,
@@ -131,6 +146,13 @@ class $WalletsTable extends Wallets
       context.handle(_iconNameMeta,
           iconName.isAcceptableOrUnknown(data['icon_name']!, _iconNameMeta));
     }
+    if (data.containsKey('account_type')) {
+      context.handle(
+          _accountTypeMeta,
+          accountType.isAcceptableOrUnknown(
+              data['account_type']!, _accountTypeMeta));
+    }
+    context.handle(_accountTagsMeta, const VerificationResult.success());
     if (data.containsKey('date_created')) {
       context.handle(
           _dateCreatedMeta,
@@ -182,6 +204,11 @@ class $WalletsTable extends Wallets
           .read(DriftSqlType.string, data['${effectivePrefix}colour']),
       iconName: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}icon_name']),
+        accountType: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}account_type']),
+        accountTags: $WalletsTable.$converteraccountTagsn.fromSql(
+          attachedDatabase.typeMapping
+            .read(DriftSqlType.string, data['${effectivePrefix}account_tags'])),
       dateCreated: attachedDatabase.typeMapping
           .read(DriftSqlType.dateTime, data['${effectivePrefix}date_created'])!,
       dateTimeModified: attachedDatabase.typeMapping.read(
@@ -211,6 +238,10 @@ class $WalletsTable extends Wallets
   static TypeConverter<List<HomePageWidgetDisplay>?, String?>
       $converterhomePageWidgetDisplayn =
       NullAwareTypeConverter.wrap($converterhomePageWidgetDisplay);
+    static TypeConverter<List<String>, String> $converteraccountTags =
+      const StringListInColumnConverter();
+    static TypeConverter<List<String>?, String?> $converteraccountTagsn =
+      NullAwareTypeConverter.wrap($converteraccountTags);
 }
 
 class TransactionWallet extends DataClass
@@ -219,6 +250,8 @@ class TransactionWallet extends DataClass
   final String name;
   final String? colour;
   final String? iconName;
+    final String? accountType;
+    final List<String>? accountTags;
   final DateTime dateCreated;
   final DateTime? dateTimeModified;
   final int order;
@@ -231,6 +264,8 @@ class TransactionWallet extends DataClass
       required this.name,
       this.colour,
       this.iconName,
+      this.accountType,
+      this.accountTags,
       required this.dateCreated,
       this.dateTimeModified,
       required this.order,
@@ -248,6 +283,13 @@ class TransactionWallet extends DataClass
     }
     if (!nullToAbsent || iconName != null) {
       map['icon_name'] = Variable<String>(iconName);
+    }
+    if (!nullToAbsent || accountType != null) {
+      map['account_type'] = Variable<String>(accountType);
+    }
+    if (!nullToAbsent || accountTags != null) {
+      final converter = $WalletsTable.$converteraccountTagsn;
+      map['account_tags'] = Variable<String>(converter.toSql(accountTags));
     }
     map['date_created'] = Variable<DateTime>(dateCreated);
     if (!nullToAbsent || dateTimeModified != null) {
@@ -278,6 +320,12 @@ class TransactionWallet extends DataClass
       iconName: iconName == null && nullToAbsent
           ? const Value.absent()
           : Value(iconName),
+        accountType: accountType == null && nullToAbsent
+          ? const Value.absent()
+          : Value(accountType),
+        accountTags: accountTags == null && nullToAbsent
+          ? const Value.absent()
+          : Value(accountTags),
       dateCreated: Value(dateCreated),
       dateTimeModified: dateTimeModified == null && nullToAbsent
           ? const Value.absent()
@@ -304,6 +352,8 @@ class TransactionWallet extends DataClass
       name: serializer.fromJson<String>(json['name']),
       colour: serializer.fromJson<String?>(json['colour']),
       iconName: serializer.fromJson<String?>(json['iconName']),
+        accountType: serializer.fromJson<String?>(json['accountType']),
+        accountTags: serializer.fromJson<List<String>?>(json['accountTags']),
       dateCreated: serializer.fromJson<DateTime>(json['dateCreated']),
       dateTimeModified:
           serializer.fromJson<DateTime?>(json['dateTimeModified']),
@@ -323,6 +373,8 @@ class TransactionWallet extends DataClass
       'name': serializer.toJson<String>(name),
       'colour': serializer.toJson<String?>(colour),
       'iconName': serializer.toJson<String?>(iconName),
+      'accountType': serializer.toJson<String?>(accountType),
+      'accountTags': serializer.toJson<List<String>?>(accountTags),
       'dateCreated': serializer.toJson<DateTime>(dateCreated),
       'dateTimeModified': serializer.toJson<DateTime?>(dateTimeModified),
       'order': serializer.toJson<int>(order),
@@ -339,6 +391,8 @@ class TransactionWallet extends DataClass
           String? name,
           Value<String?> colour = const Value.absent(),
           Value<String?> iconName = const Value.absent(),
+      Value<String?> accountType = const Value.absent(),
+      Value<List<String>?> accountTags = const Value.absent(),
           DateTime? dateCreated,
           Value<DateTime?> dateTimeModified = const Value.absent(),
           int? order,
@@ -352,6 +406,8 @@ class TransactionWallet extends DataClass
         name: name ?? this.name,
         colour: colour.present ? colour.value : this.colour,
         iconName: iconName.present ? iconName.value : this.iconName,
+        accountType: accountType.present ? accountType.value : this.accountType,
+        accountTags: accountTags.present ? accountTags.value : this.accountTags,
         dateCreated: dateCreated ?? this.dateCreated,
         dateTimeModified: dateTimeModified.present
             ? dateTimeModified.value
@@ -372,6 +428,8 @@ class TransactionWallet extends DataClass
           ..write('name: $name, ')
           ..write('colour: $colour, ')
           ..write('iconName: $iconName, ')
+          ..write('accountType: $accountType, ')
+          ..write('accountTags: $accountTags, ')
           ..write('dateCreated: $dateCreated, ')
           ..write('dateTimeModified: $dateTimeModified, ')
           ..write('order: $order, ')
@@ -389,6 +447,8 @@ class TransactionWallet extends DataClass
       name,
       colour,
       iconName,
+      accountType,
+      accountTags,
       dateCreated,
       dateTimeModified,
       order,
@@ -404,6 +464,8 @@ class TransactionWallet extends DataClass
           other.name == this.name &&
           other.colour == this.colour &&
           other.iconName == this.iconName &&
+          other.accountType == this.accountType &&
+          other.accountTags == this.accountTags &&
           other.dateCreated == this.dateCreated &&
           other.dateTimeModified == this.dateTimeModified &&
           other.order == this.order &&
@@ -418,6 +480,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
   final Value<String> name;
   final Value<String?> colour;
   final Value<String?> iconName;
+  final Value<String?> accountType;
+  final Value<List<String>?> accountTags;
   final Value<DateTime> dateCreated;
   final Value<DateTime?> dateTimeModified;
   final Value<int> order;
@@ -431,6 +495,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
     this.name = const Value.absent(),
     this.colour = const Value.absent(),
     this.iconName = const Value.absent(),
+    this.accountType = const Value.absent(),
+    this.accountTags = const Value.absent(),
     this.dateCreated = const Value.absent(),
     this.dateTimeModified = const Value.absent(),
     this.order = const Value.absent(),
@@ -445,6 +511,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
     required String name,
     this.colour = const Value.absent(),
     this.iconName = const Value.absent(),
+    this.accountType = const Value.absent(),
+    this.accountTags = const Value.absent(),
     this.dateCreated = const Value.absent(),
     this.dateTimeModified = const Value.absent(),
     required int order,
@@ -460,6 +528,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
     Expression<String>? name,
     Expression<String>? colour,
     Expression<String>? iconName,
+    Expression<String>? accountType,
+    Expression<String>? accountTags,
     Expression<DateTime>? dateCreated,
     Expression<DateTime>? dateTimeModified,
     Expression<int>? order,
@@ -474,6 +544,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
       if (name != null) 'name': name,
       if (colour != null) 'colour': colour,
       if (iconName != null) 'icon_name': iconName,
+      if (accountType != null) 'account_type': accountType,
+      if (accountTags != null) 'account_tags': accountTags,
       if (dateCreated != null) 'date_created': dateCreated,
       if (dateTimeModified != null) 'date_time_modified': dateTimeModified,
       if (order != null) 'order': order,
@@ -491,6 +563,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
       Value<String>? name,
       Value<String?>? colour,
       Value<String?>? iconName,
+      Value<String?>? accountType,
+      Value<List<String>?>? accountTags,
       Value<DateTime>? dateCreated,
       Value<DateTime?>? dateTimeModified,
       Value<int>? order,
@@ -504,6 +578,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
       name: name ?? this.name,
       colour: colour ?? this.colour,
       iconName: iconName ?? this.iconName,
+      accountType: accountType ?? this.accountType,
+      accountTags: accountTags ?? this.accountTags,
       dateCreated: dateCreated ?? this.dateCreated,
       dateTimeModified: dateTimeModified ?? this.dateTimeModified,
       order: order ?? this.order,
@@ -530,6 +606,14 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
     }
     if (iconName.present) {
       map['icon_name'] = Variable<String>(iconName.value);
+    }
+    if (accountType.present) {
+      map['account_type'] = Variable<String>(accountType.value);
+    }
+    if (accountTags.present) {
+      final converter = $WalletsTable.$converteraccountTagsn;
+
+      map['account_tags'] = Variable<String>(converter.toSql(accountTags.value));
     }
     if (dateCreated.present) {
       map['date_created'] = Variable<DateTime>(dateCreated.value);
@@ -568,6 +652,8 @@ class WalletsCompanion extends UpdateCompanion<TransactionWallet> {
           ..write('name: $name, ')
           ..write('colour: $colour, ')
           ..write('iconName: $iconName, ')
+          ..write('accountType: $accountType, ')
+          ..write('accountTags: $accountTags, ')
           ..write('dateCreated: $dateCreated, ')
           ..write('dateTimeModified: $dateTimeModified, ')
           ..write('order: $order, ')

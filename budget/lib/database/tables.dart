@@ -26,7 +26,7 @@ import 'package:budget/pages/activityPage.dart';
 import 'package:flutter/material.dart' show RangeValues;
 part 'tables.g.dart';
 
-int schemaVersionGlobal = 46;
+int schemaVersionGlobal = 47;
 
 // To update and migrate the database, check the README
 
@@ -254,6 +254,9 @@ class Wallets extends Table {
   TextColumn get name => text().withLength(max: NAME_LIMIT)();
   TextColumn get colour => text().withLength(max: COLOUR_LIMIT).nullable()();
   TextColumn get iconName => text().nullable()(); // Money symbol
+  TextColumn get accountType => text().nullable()();
+  TextColumn get accountTags =>
+    text().map(const StringListInColumnConverter()).nullable()();
   DateTimeColumn get dateCreated =>
       dateTime().clientDefault(() => new DateTime.now())();
   DateTimeColumn get dateTimeModified =>
@@ -990,6 +993,11 @@ class FinanceDatabase extends _$FinanceDatabase {
                 print("Migration Error: Error creating table ObjectivesTable " +
                     e.toString());
               }
+            },
+            from46To47: (m, schema) async {
+              print("46 to 47");
+              await m.addColumn(schema.wallets, schema.wallets.accountType);
+              await m.addColumn(schema.wallets, schema.wallets.accountTags);
             },
             from40To41: (m, schema) async {
               print("40 to 41");
